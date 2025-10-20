@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  network-discovery:
+    build: .
+    container_name: network-discovery-mcp
+    environment:
+      - ARTIFACT_DIR=/artifacts
+      - BATFISH_HOST=http://batfish:9997
+    volumes:
+      - ./artifacts:/artifacts
+    ports:
+      - "8000:8000"
+    depends_on:
+      - batfish
+
+  batfish:
+    image: batfish/allinone:latest
+    container_name: batfish
+    ports:
+      - "9997:9997"
+    volumes:
+      - ./artifacts:/data

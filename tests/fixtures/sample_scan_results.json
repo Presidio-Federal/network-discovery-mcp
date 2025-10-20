@@ -1,0 +1,26 @@
+{
+  "job_id": "test_job",
+  "scanned_at": "2025-10-19T12:00:00Z",
+  "targets_count": 3,
+  "hosts": [
+    {
+      "ip": "192.168.1.1",
+      "reachable": true,
+      "latency_ms": 5,
+      "ports": {"22": "open", "443": "closed"},
+      "banner": "SSH-2.0-OpenSSH_8.9"
+    },
+    {
+      "ip": "192.168.1.2",
+      "reachable": true,
+      "latency_ms": 8,
+      "ports": {"22": "closed", "443": "open"},
+      "banner": "CN=example.com"
+    },
+    {
+      "ip": "10.0.0.1",
+      "reachable": false,
+      "ports": {"22": "closed", "443": "closed"}
+    }
+  ]
+}
