@@ -82,6 +82,7 @@ async def test_scan_from_targets(sample_targets, sample_scan_results, mock_scan_
         with patch("network_discovery.scanner.get_job_dir", return_value=job_dir), \
              patch("network_discovery.scanner.get_targets_path", return_value=targets_path), \
              patch("network_discovery.scanner.get_scan_path", return_value=job_dir / "ip_scan.json"), \
+             patch("network_discovery.scanner.get_reachable_hosts_path", return_value=job_dir / "reachable_hosts.json"), \
              patch("network_discovery.scanner.update_status"), \
              patch("network_discovery.scanner.atomic_write_json") as mock_write:
             
@@ -94,11 +95,13 @@ async def test_scan_from_targets(sample_targets, sample_scan_results, mock_scan_
             assert set(call_args[0]) == set(["192.168.1.1", "192.168.1.2", "10.0.0.1"])
             assert call_args[1] == [22, 443]
             
-            # Check that atomic_write_json was called
-            mock_write.assert_called_once()
-            write_args = mock_write.call_args[0]
-            assert write_args[0]["job_id"] == "test_job"
-            assert write_args[0]["hosts"] == sample_scan_results
+            # Check that atomic_write_json was called twice (once for scan results, once for reachable hosts)
+            assert mock_write.call_count == 2
+            
+            # Check the first call (ip_scan.json)
+            first_call_args = mock_write.call_args_list[0][0]
+            assert first_call_args[0]["job_id"] == "test_job"
+            assert first_call_args[0]["hosts"] == sample_scan_results
             
             # Check the result
             assert result["job_id"] == "test_job"
@@ -120,6 +123,7 @@ async def test_scan_from_subnets(sample_scan_results, mock_scan_ips):
         
         with patch("network_discovery.scanner.get_job_dir", return_value=job_dir), \
              patch("network_discovery.scanner.get_scan_path", return_value=job_dir / "ip_scan.json"), \
+             patch("network_discovery.scanner.get_reachable_hosts_path", return_value=job_dir / "reachable_hosts.json"), \
              patch("network_discovery.scanner.update_status"), \
              patch("network_discovery.scanner.atomic_write_json") as mock_write:
             
@@ -129,8 +133,8 @@ async def test_scan_from_subnets(sample_scan_results, mock_scan_ips):
             # Check that _scan_ips was called
             mock_scan_ips.assert_called_once()
             
-            # Check that atomic_write_json was called
-            mock_write.assert_called_once()
+            # Check that atomic_write_json was called twice (once for scan results, once for reachable hosts)
+            assert mock_write.call_count == 2
             
             # Check the result
             assert result["job_id"] == "test_job"

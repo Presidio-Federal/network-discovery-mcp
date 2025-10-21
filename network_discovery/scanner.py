@@ -4,6 +4,8 @@ IP Scanner module for network discovery.
 This module probes IPs/subnets for management reachability only.
 It explicitly does NOT read device_states/ files - scanner must only
 use targets.json or explicitly provided subnets.
+
+Scanner explicitly must not read device_states directory for security isolation.
 """
 
 import asyncio
@@ -62,6 +64,8 @@ async def scan_from_targets(
         targets_path: Path to targets.json file (default: {job_dir}/targets.json)
         ports: List of ports to scan (default: [22, 443])
         concurrency: Maximum concurrent scans
+        
+    Note: scanner is ignoring device_states directory as per security policy
         
     Returns:
         Dict: Scan results with job_id and status
