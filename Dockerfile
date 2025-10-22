@@ -17,7 +17,7 @@ ENV JAVA_HOME=/usr/lib/jvm/default-java
 
 # Install pybatfish first to ensure it's properly installed
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir pybatfish==2023.12.1
+    pip install --no-cache-dir --upgrade pybatfish
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
