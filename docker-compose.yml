@@ -1,8 +1,6 @@
-version: "3.9"
-
 services:
   network-discovery:
-    build: .
+    image: ghcr.io/presidio-federal/network-discovery-mcp:latest
     container_name: network-discovery-mcp
     environment:
       - ARTIFACT_DIR=/artifacts
