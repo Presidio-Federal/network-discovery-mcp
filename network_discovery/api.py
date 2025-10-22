@@ -31,7 +31,8 @@ from network_discovery.workers import (
     start_batfish_snapshot_load,
     get_batfish_topology,
 )
-from network_discovery.config_collector import get_device_state
+from network_discovery.config_collector import get_device_state, get_collection_status
+from network_discovery.batfish_loader import BATFISH_AVAILABLE
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -340,6 +341,27 @@ async def collect_device_states(request: StateCollectorRequest):
         logger.error(f"Error in state collector endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/v1/state/collection-status/{job_id}", response_model=Dict)
+async def get_config_collection_status(job_id: str):
+    """
+    Get detailed status of the configuration collection process.
+    
+    This endpoint returns detailed status information about the configuration
+    collection process, including per-device status and progress metrics.
+    """
+    try:
+        status = get_collection_status(job_id)
+        
+        if status.get("status") == "not_found":
+            raise HTTPException(status_code=404, detail=f"No collection status found for job {job_id}")
+        
+        return status
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_config_collection_status endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/v1/state/{hostname}", response_model=Dict)
 async def get_device_state_endpoint(hostname: str, job_id: str):
     """
@@ -452,3 +474,54 @@ async def debug_routing(request: DebugRoutingRequest):
     except Exception as e:
         logger.error(f"Error in debug_routing endpoint: {str(e)}")
         return {"error": str(e), "traceback": str(e.__traceback__)}
+
+@app.get("/debug/batfish-status", response_model=Dict)
+async def debug_batfish_status():
+    """
+    Check if pybatfish is available.
+    
+    This endpoint returns the status of the pybatfish module.
+    """
+    try:
+        # Try to import pybatfish directly
+        import sys
+        import importlib
+        import importlib.util
+        
+        # Check if pybatfish is installed
+        pybatfish_spec = importlib.util.find_spec("pybatfish")
+        pybatfish_installed = pybatfish_spec is not None
+        
+        # Check if we can import the required modules
+        commands_available = False
+        question_available = False
+        
+        if pybatfish_installed:
+            try:
+                from pybatfish.client.commands import bf_init_snapshot, bf_set_network, bf_session
+                commands_available = True
+            except ImportError:
+                pass
+                
+            try:
+                from pybatfish.question import bfq
+                question_available = True
+            except ImportError:
+                pass
+        
+        # Get Python path
+        python_path = sys.path
+        
+        return {
+            "batfish_available": BATFISH_AVAILABLE,
+            "pybatfish_installed": pybatfish_installed,
+            "commands_available": commands_available,
+            "question_available": question_available,
+            "python_path": python_path
+        }
+    except Exception as e:
+        logger.error(f"Error in debug_batfish_status endpoint: {str(e)}")
+        return {
+            "batfish_available": False,
+            "error": str(e)
+        }

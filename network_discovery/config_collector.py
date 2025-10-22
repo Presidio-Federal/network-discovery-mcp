@@ -11,9 +11,12 @@ import asyncio
 import logging
 import os
 import re
+import sys
+import time
+import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 
 import asyncssh
 import netmiko
@@ -29,7 +32,19 @@ from network_discovery.artifacts import (
 )
 from network_discovery.config import DEFAULT_CONCURRENCY
 
+# Configure logger with more detailed format
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # Set to DEBUG level for maximum verbosity
+
+# Add a stream handler if none exists
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+# Global variables for tracking progress
+COLLECTION_STATUS = {}  # Stores per-job collection status
 
 # Commands to retrieve running configuration based on vendor
 CONFIG_COMMANDS = {
@@ -45,6 +60,95 @@ CONFIG_COMMANDS = {
 # Default command if vendor is unknown
 DEFAULT_CONFIG_COMMAND = "show running-config"
 
+def extract_hostname_from_config(config: str, vendor: str, default_hostname: str) -> str:
+    """
+    Extract the hostname from device configuration.
+    
+    Args:
+        config: Device configuration
+        vendor: Device vendor
+        default_hostname: Default hostname to use if extraction fails
+        
+    Returns:
+        str: Extracted hostname or default_hostname if extraction fails
+    """
+    try:
+        # Different vendors have different hostname formats
+        if vendor == "Cisco" or vendor == "Arista":
+            # Look for "hostname <name>" in config
+            for line in config.splitlines():
+                if line.strip().startswith("hostname "):
+                    hostname = line.strip().split("hostname ", 1)[1].strip()
+                    if hostname:
+                        return hostname
+        
+        elif vendor == "Juniper":
+            # Look for "set system host-name <name>" in config
+            for line in config.splitlines():
+                if "set system host-name" in line:
+                    hostname = line.strip().split("host-name ", 1)[1].strip()
+                    if hostname:
+                        return hostname
+        
+        # Add more vendor-specific hostname extraction as needed
+        
+        # If we couldn't extract the hostname, use the default
+        return default_hostname
+    except Exception as e:
+        # If any error occurs during extraction, use the default hostname
+        logger.warning(f"Failed to extract hostname from config: {str(e)}")
+        return default_hostname
+
+def update_collection_status(job_id: str, status: Dict) -> None:
+    """
+    Update the global collection status for a job.
+    
+    Args:
+        job_id: Job identifier
+        status: Status information to update
+    """
+    if job_id not in COLLECTION_STATUS:
+        COLLECTION_STATUS[job_id] = {
+            "job_id": job_id,
+            "status": "initializing",
+            "started_at": datetime.utcnow().isoformat() + "Z",
+            "total_devices": 0,
+            "completed_devices": 0,
+            "failed_devices": 0,
+            "in_progress_devices": 0,
+            "pending_devices": 0,
+            "device_statuses": {},
+            "last_updated": datetime.utcnow().isoformat() + "Z"
+        }
+    
+    # Update with new status info
+    COLLECTION_STATUS[job_id].update(status)
+    
+    # Always update the last_updated timestamp
+    COLLECTION_STATUS[job_id]["last_updated"] = datetime.utcnow().isoformat() + "Z"
+    
+    # Log the update
+    logger.debug(f"Updated collection status for job {job_id}: {status}")
+
+def get_collection_status(job_id: str) -> Dict:
+    """
+    Get the current collection status for a job.
+    
+    Args:
+        job_id: Job identifier
+        
+    Returns:
+        Dict: Current collection status
+    """
+    if job_id not in COLLECTION_STATUS:
+        return {
+            "job_id": job_id,
+            "status": "not_found",
+            "message": f"No collection status found for job {job_id}"
+        }
+    
+    return COLLECTION_STATUS[job_id]
+
 async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT_CONCURRENCY) -> Dict:
     """
     Collect configuration state from all devices in parallel.
@@ -57,20 +161,39 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
     Returns:
         Dict: Collection results with job_id and status
     """
+    logger.info(f"Starting configuration collection for job {job_id} with concurrency {concurrency}")
+    start_time = time.time()
+    
+    # Initialize collection status
+    update_collection_status(job_id, {
+        "status": "initializing",
+        "started_at": datetime.utcnow().isoformat() + "Z",
+    })
+    
     try:
         # Get fingerprints to identify devices
         fingerprints_path = get_fingerprints_path(job_id)
+        logger.info(f"Loading fingerprints from {fingerprints_path}")
         fingerprints = read_json(fingerprints_path)
         
         if not fingerprints or "hosts" not in fingerprints:
             error_msg = f"No fingerprints found for job {job_id}"
             logger.error(error_msg)
             log_error(job_id, "state_collector", error_msg)
+            
+            update_collection_status(job_id, {
+                "status": "failed",
+                "error": error_msg,
+                "completed_at": datetime.utcnow().isoformat() + "Z"
+            })
+            
             return {
                 "job_id": job_id,
                 "status": "failed",
                 "error": error_msg
             }
+        
+        logger.info(f"Found {len(fingerprints.get('hosts', []))} hosts in fingerprints")
         
         # Update status to running
         update_status(
@@ -83,16 +206,22 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
         # Ensure state directory exists
         state_dir = get_state_dir(job_id)
         state_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Created state directory at {state_dir}")
         
         # Ensure batfish snapshot directory exists
         batfish_configs_dir = get_batfish_configs_dir(job_id)
         batfish_configs_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Created Batfish configs directory at {batfish_configs_dir}")
         
         # Filter for reachable devices with known vendors
         devices = []
+        skipped_devices = 0
+        
         for host in fingerprints["hosts"]:
             # Skip unreachable devices
             if not host.get("inference", {}).get("vendor"):
+                logger.debug(f"Skipping device {host['ip']} - no vendor information")
+                skipped_devices += 1
                 continue
                 
             # Create device info
@@ -104,6 +233,9 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
             }
             
             devices.append(device)
+            logger.debug(f"Added device {device['hostname']} ({device['ip']}) to collection queue")
+        
+        logger.info(f"Identified {len(devices)} devices for configuration collection (skipped {skipped_devices})")
         
         if not devices:
             logger.warning(f"No suitable devices found for job {job_id}")
@@ -118,6 +250,14 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
                 completed_at=datetime.utcnow().isoformat() + "Z"
             )
             
+            update_collection_status(job_id, {
+                "status": "completed",
+                "total_devices": 0,
+                "completed_devices": 0,
+                "failed_devices": 0,
+                "completed_at": datetime.utcnow().isoformat() + "Z"
+            })
+            
             return {
                 "job_id": job_id,
                 "status": "completed",
@@ -125,29 +265,84 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
                 "result_dir": "state/"
             }
         
+        # Update collection status with device count
+        update_collection_status(job_id, {
+            "status": "collecting",
+            "total_devices": len(devices),
+            "pending_devices": len(devices),
+            "device_statuses": {device["hostname"]: {"status": "pending", "ip": device["ip"], "vendor": device["vendor"]} for device in devices}
+        })
+        
         # Collect configurations in parallel with concurrency limit
+        logger.info(f"Starting parallel collection for {len(devices)} devices with concurrency {concurrency}")
         semaphore = asyncio.Semaphore(concurrency)
         collection_tasks = [
             _collect_device_config(device, creds, job_id, semaphore)
             for device in devices
         ]
         
+        logger.debug(f"Created {len(collection_tasks)} collection tasks")
         collection_results = await asyncio.gather(*collection_tasks, return_exceptions=True)
+        logger.info(f"Completed all collection tasks")
         
         # Process results
         success_count = 0
         failed_count = 0
         
         for i, result in enumerate(collection_results):
+            hostname = devices[i]["hostname"]
             if isinstance(result, Exception):
-                logger.error(f"Error collecting config from {devices[i]['hostname']}: {str(result)}")
+                logger.error(f"Error collecting config from {hostname}: {str(result)}")
                 failed_count += 1
+                
+                # Update device status
+                device_status = COLLECTION_STATUS[job_id]["device_statuses"].get(hostname, {})
+                device_status.update({
+                    "status": "failed",
+                    "error": str(result),
+                    "completed_at": datetime.utcnow().isoformat() + "Z"
+                })
+                COLLECTION_STATUS[job_id]["device_statuses"][hostname] = device_status
+                
             elif result.get("status") == "success":
+                logger.info(f"Successfully collected config from {hostname}")
                 success_count += 1
+                
+                # Update device status
+                device_status = COLLECTION_STATUS[job_id]["device_statuses"].get(hostname, {})
+                device_status.update({
+                    "status": "completed",
+                    "state_path": result.get("state_path"),
+                    "batfish_path": result.get("batfish_path"),
+                    "completed_at": datetime.utcnow().isoformat() + "Z"
+                })
+                COLLECTION_STATUS[job_id]["device_statuses"][hostname] = device_status
+                
             else:
+                logger.warning(f"Collection failed for {hostname}: {result.get('error', 'Unknown error')}")
                 failed_count += 1
+                
+                # Update device status
+                device_status = COLLECTION_STATUS[job_id]["device_statuses"].get(hostname, {})
+                device_status.update({
+                    "status": "failed",
+                    "error": result.get("error", "Unknown error"),
+                    "completed_at": datetime.utcnow().isoformat() + "Z"
+                })
+                COLLECTION_STATUS[job_id]["device_statuses"][hostname] = device_status
+        
+        # Update collection status
+        update_collection_status(job_id, {
+            "status": "completed",
+            "completed_devices": success_count,
+            "failed_devices": failed_count,
+            "in_progress_devices": 0,
+            "pending_devices": 0,
+            "completed_at": datetime.utcnow().isoformat() + "Z"
+        })
         
         # Update batfish_loader status to indicate configs are ready for loading
+        logger.info(f"Updating batfish_loader status to indicate configs are ready")
         update_status(
             job_id,
             "batfish_loader",
@@ -158,6 +353,7 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
         )
         
         # Update state_collector status
+        logger.info(f"Updating state_collector status to completed")
         update_status(
             job_id,
             "state_collector",
@@ -169,18 +365,31 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
             completed_at=datetime.utcnow().isoformat() + "Z"
         )
         
+        # Calculate total time
+        total_time = time.time() - start_time
+        logger.info(f"Configuration collection completed in {total_time:.2f}s. Success: {success_count}, Failed: {failed_count}")
+        
         return {
             "job_id": job_id,
             "status": "completed",
             "device_count": len(devices),
             "success_count": success_count,
             "failed_count": failed_count,
-            "result_dir": "state/"
+            "result_dir": "state/",
+            "elapsed_time": f"{total_time:.2f}s"
         }
     except Exception as e:
         error_msg = f"Failed to collect device states: {str(e)}"
         logger.error(error_msg)
+        logger.error(traceback.format_exc())
         log_error(job_id, "state_collector", error_msg)
+        
+        # Update collection status
+        update_collection_status(job_id, {
+            "status": "failed",
+            "error": str(e),
+            "completed_at": datetime.utcnow().isoformat() + "Z"
+        })
         
         # Update status to failed
         update_status(
@@ -191,10 +400,15 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
             completed_at=datetime.utcnow().isoformat() + "Z"
         )
         
+        # Calculate elapsed time
+        total_time = time.time() - start_time
+        logger.info(f"Configuration collection failed after {total_time:.2f}s")
+        
         return {
             "job_id": job_id,
             "status": "failed",
-            "error": str(e)
+            "error": str(e),
+            "elapsed_time": f"{total_time:.2f}s"
         }
 
 async def collect_single_state(job_id: str, creds: Dict, hostname: str) -> Dict:
@@ -395,13 +609,41 @@ async def _collect_device_config(
     Returns:
         Dict: Collection results
     """
+    ip = device["ip"]
+    vendor = device["vendor"]
+    hostname = device.get("hostname", ip)
+    protocols = device.get("protocols", [])
+    
+    # Update device status to in_progress before acquiring semaphore
+    if job_id in COLLECTION_STATUS:
+        device_status = COLLECTION_STATUS[job_id]["device_statuses"].get(hostname, {})
+        device_status.update({
+            "status": "waiting",
+            "ip": ip,
+            "vendor": vendor,
+            "protocols": protocols,
+            "waiting_at": datetime.utcnow().isoformat() + "Z"
+        })
+        COLLECTION_STATUS[job_id]["device_statuses"][hostname] = device_status
+        
+        # Update counts
+        COLLECTION_STATUS[job_id]["pending_devices"] = max(0, COLLECTION_STATUS[job_id].get("pending_devices", 0) - 1)
+        COLLECTION_STATUS[job_id]["in_progress_devices"] = COLLECTION_STATUS[job_id].get("in_progress_devices", 0) + 1
+    
     async with semaphore:
+        start_time = time.time()
+        logger.info(f"Starting configuration collection for {hostname} ({ip})")
+        
+        # Update device status to in_progress after acquiring semaphore
+        if job_id in COLLECTION_STATUS:
+            device_status = COLLECTION_STATUS[job_id]["device_statuses"].get(hostname, {})
+            device_status.update({
+                "status": "in_progress",
+                "started_at": datetime.utcnow().isoformat() + "Z"
+            })
+            COLLECTION_STATUS[job_id]["device_statuses"][hostname] = device_status
+        
         try:
-            ip = device["ip"]
-            vendor = device["vendor"]
-            hostname = device.get("hostname", ip)
-            protocols = device.get("protocols", [])
-            
             # Determine collection method based on protocols and vendor
             config = None
             protocol_used = None
@@ -409,33 +651,49 @@ async def _collect_device_config(
             # Try SSH first if available
             if "ssh" in protocols:
                 try:
+                    logger.info(f"Attempting SSH collection for {hostname} ({ip})")
                     config = await _collect_via_ssh(ip, creds, vendor)
                     protocol_used = "ssh"
+                    logger.info(f"SSH collection successful for {hostname} ({ip})")
                 except Exception as e:
-                    logger.debug(f"SSH collection failed for {ip}: {str(e)}")
+                    logger.warning(f"SSH collection failed for {hostname} ({ip}): {str(e)}")
+                    logger.debug(traceback.format_exc())
             
             # Try NETCONF if SSH failed and it's supported
             if not config and vendor in ["Juniper", "Cisco"]:
                 try:
+                    logger.info(f"Attempting NETCONF collection for {hostname} ({ip})")
                     config = await _collect_via_netconf(ip, creds, vendor)
                     protocol_used = "netconf"
+                    logger.info(f"NETCONF collection successful for {hostname} ({ip})")
                 except Exception as e:
-                    logger.debug(f"NETCONF collection failed for {ip}: {str(e)}")
+                    logger.warning(f"NETCONF collection failed for {hostname} ({ip}): {str(e)}")
+                    logger.debug(traceback.format_exc())
             
             # Try RESTCONF as last resort for Cisco devices
             if not config and vendor == "Cisco" and "https" in protocols:
                 try:
+                    logger.info(f"Attempting RESTCONF collection for {hostname} ({ip})")
                     config = await _collect_via_restconf(ip, creds)
                     protocol_used = "restconf"
+                    logger.info(f"RESTCONF collection successful for {hostname} ({ip})")
                 except Exception as e:
-                    logger.debug(f"RESTCONF collection failed for {ip}: {str(e)}")
+                    logger.warning(f"RESTCONF collection failed for {hostname} ({ip}): {str(e)}")
+                    logger.debug(traceback.format_exc())
             
             if not config:
-                raise Exception(f"Failed to collect configuration from {ip} using any method")
+                error_msg = f"Failed to collect configuration from {hostname} ({ip}) using any method"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+            
+            # Extract actual hostname from config if possible
+            actual_hostname = extract_hostname_from_config(config, vendor, hostname)
+            logger.info(f"Extracted hostname from config: {actual_hostname} (original: {hostname})")
             
             # Create state data
+            logger.info(f"Creating state data for {actual_hostname} ({ip})")
             state_data = {
-                "hostname": hostname,
+                "hostname": actual_hostname,
                 "ip": ip,
                 "vendor": vendor,
                 "collected_at": datetime.utcnow().isoformat() + "Z",
@@ -444,26 +702,78 @@ async def _collect_device_config(
             }
             
             # Save state data to JSON
-            state_path = get_state_path(job_id, hostname)
+            state_path = get_state_path(job_id, actual_hostname)
+            logger.info(f"Saving state data to {state_path}")
             atomic_write_json(state_data, state_path)
             
             # Write raw config directly to Batfish snapshot directory
-            batfish_config_path = get_batfish_config_path(job_id, hostname)
+            batfish_config_path = get_batfish_config_path(job_id, actual_hostname)
+            logger.info(f"Writing raw config to {batfish_config_path}")
             with open(batfish_config_path, "w") as f:
                 f.write(config)
             
+            # Calculate elapsed time
+            elapsed_time = time.time() - start_time
+            logger.info(f"Configuration collection for {hostname} completed in {elapsed_time:.2f}s")
+            
+            # Update device status
+            if job_id in COLLECTION_STATUS:
+                # Update status for both original hostname and actual hostname
+                device_status = COLLECTION_STATUS[job_id]["device_statuses"].get(hostname, {})
+                device_status.update({
+                    "status": "completed",
+                    "protocol": protocol_used,
+                    "actual_hostname": actual_hostname,
+                    "state_path": str(state_path),
+                    "batfish_path": str(batfish_config_path),
+                    "config_size": len(config),
+                    "elapsed_time": f"{elapsed_time:.2f}s",
+                    "completed_at": datetime.utcnow().isoformat() + "Z"
+                })
+                COLLECTION_STATUS[job_id]["device_statuses"][hostname] = device_status
+                
+                # Also add entry for actual hostname if different
+                if actual_hostname != hostname:
+                    COLLECTION_STATUS[job_id]["device_statuses"][actual_hostname] = device_status.copy()
+                
+                # Update counts
+                COLLECTION_STATUS[job_id]["in_progress_devices"] = max(0, COLLECTION_STATUS[job_id].get("in_progress_devices", 0) - 1)
+                COLLECTION_STATUS[job_id]["completed_devices"] = COLLECTION_STATUS[job_id].get("completed_devices", 0) + 1
+            
             return {
                 "status": "success",
-                "hostname": hostname,
+                "hostname": actual_hostname,
+                "original_ip": ip,
                 "state_path": str(state_path),
-                "batfish_path": str(batfish_config_path)
+                "batfish_path": str(batfish_config_path),
+                "elapsed_time": f"{elapsed_time:.2f}s"
             }
         except Exception as e:
-            logger.error(f"Failed to collect config from {device.get('hostname', device['ip'])}: {str(e)}")
+            # Calculate elapsed time
+            elapsed_time = time.time() - start_time
+            logger.error(f"Failed to collect config from {hostname} ({ip}) after {elapsed_time:.2f}s: {str(e)}")
+            logger.error(traceback.format_exc())
+            
+            # Update device status
+            if job_id in COLLECTION_STATUS:
+                device_status = COLLECTION_STATUS[job_id]["device_statuses"].get(hostname, {})
+                device_status.update({
+                    "status": "failed",
+                    "error": str(e),
+                    "elapsed_time": f"{elapsed_time:.2f}s",
+                    "completed_at": datetime.utcnow().isoformat() + "Z"
+                })
+                COLLECTION_STATUS[job_id]["device_statuses"][hostname] = device_status
+                
+                # Update counts
+                COLLECTION_STATUS[job_id]["in_progress_devices"] = max(0, COLLECTION_STATUS[job_id].get("in_progress_devices", 0) - 1)
+                COLLECTION_STATUS[job_id]["failed_devices"] = COLLECTION_STATUS[job_id].get("failed_devices", 0) + 1
+            
             return {
                 "status": "failed",
-                "hostname": device.get("hostname", device["ip"]),
-                "error": str(e)
+                "hostname": hostname,
+                "error": str(e),
+                "elapsed_time": f"{elapsed_time:.2f}s"
             }
 
 async def _collect_via_ssh(ip: str, creds: Dict, vendor: str) -> str:
@@ -478,30 +788,69 @@ async def _collect_via_ssh(ip: str, creds: Dict, vendor: str) -> str:
     Returns:
         str: Device configuration
     """
+    start_time = time.time()
+    
     # Parse IP and port
     if ":" in ip:
         host, port = ip.split(":", 1)
         port = int(port)
+        logger.debug(f"Parsed IP {ip} to host={host}, port={port}")
     else:
         host = ip
         port = 22
+        logger.debug(f"Using default port 22 for {host}")
     
     # Get the appropriate command for this vendor
     command = CONFIG_COMMANDS.get(vendor, DEFAULT_CONFIG_COMMAND)
+    logger.debug(f"Using command for {vendor}: '{command}'")
     
-    # Connect via AsyncSSH
-    async with asyncssh.connect(
-        host=host,
-        port=port,
-        username=creds.get("username"),
-        password=creds.get("password"),
-        known_hosts=None
-    ) as conn:
-        result = await conn.run(command)
-        if result.exit_status != 0:
-            raise Exception(f"Command failed with exit status {result.exit_status}: {result.stderr}")
+    try:
+        logger.debug(f"Establishing SSH connection to {host}:{port}")
         
-        return result.stdout
+        # Connect via AsyncSSH
+        async with asyncssh.connect(
+            host=host,
+            port=port,
+            username=creds.get("username"),
+            password=creds.get("password"),
+            known_hosts=None,
+            connect_timeout=30
+        ) as conn:
+            connection_time = time.time() - start_time
+            logger.debug(f"SSH connection established to {host}:{port} in {connection_time:.2f}s")
+            
+            logger.debug(f"Executing command on {host}: '{command}'")
+            cmd_start_time = time.time()
+            result = await conn.run(command)
+            cmd_time = time.time() - cmd_start_time
+            
+            if result.exit_status != 0:
+                error_msg = f"Command failed on {host} with exit status {result.exit_status}: {result.stderr}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+            
+            config_length = len(result.stdout)
+            logger.debug(f"Command completed on {host} in {cmd_time:.2f}s, output size: {config_length} bytes")
+            
+            # Check if we got a reasonable config
+            if config_length < 100:
+                logger.warning(f"Config from {host} is suspiciously small ({config_length} bytes)")
+                logger.debug(f"Config content: {result.stdout}")
+            
+            total_time = time.time() - start_time
+            logger.debug(f"SSH collection from {host} completed in {total_time:.2f}s")
+            
+            return result.stdout
+    except asyncssh.Error as e:
+        elapsed_time = time.time() - start_time
+        error_msg = f"SSH connection to {host}:{port} failed after {elapsed_time:.2f}s: {str(e)}"
+        logger.error(error_msg)
+        raise Exception(error_msg)
+    except Exception as e:
+        elapsed_time = time.time() - start_time
+        error_msg = f"SSH collection from {host}:{port} failed after {elapsed_time:.2f}s: {str(e)}"
+        logger.error(error_msg)
+        raise Exception(error_msg)
 
 async def _collect_via_netconf(ip: str, creds: Dict, vendor: str) -> str:
     """

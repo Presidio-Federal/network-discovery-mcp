@@ -15,7 +15,9 @@ import os
 import socket
 import ssl
 import subprocess
+import sys
 import time
+import traceback
 import uuid
 from datetime import datetime
 from ipaddress import IPv4Address, IPv4Network, ip_address, ip_network
@@ -38,7 +40,16 @@ from network_discovery.config import (
     get_job_dir,
 )
 
+# Configure logger with more detailed format
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # Set to DEBUG level for maximum verbosity
+
+# Add a stream handler if none exists
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 # Check if fping is available
 FPING_AVAILABLE = False
@@ -83,6 +94,7 @@ async def scan_from_targets(
     
     try:
         # Load targets
+        logger.info(f"Loading targets from {targets_path}")
         targets = read_json(targets_path)
         if not targets:
             error_msg = f"Failed to load targets from {targets_path}"
@@ -91,6 +103,8 @@ async def scan_from_targets(
             update_status(job_id, "scanner", "failed", error=error_msg)
             return {"job_id": job_id, "status": "failed", "error": error_msg}
         
+        logger.info(f"Successfully loaded targets for job {job_id}")
+        
         # IMPORTANT: Scanner explicitly must not read device_states
         # This is a security measure to ensure separation of concerns
         device_states_dir = get_job_dir(job_id) / "device_states"
@@ -98,22 +112,37 @@ async def scan_from_targets(
             logger.info("Scanner is ignoring device_states directory as per security policy")
         
         # Extract IPs to scan
-        ips_to_scan = set(targets.get("candidate_ips", []))
+        candidate_ips = targets.get("candidate_ips", [])
+        logger.info(f"Found {len(candidate_ips)} candidate IPs in targets file")
+        ips_to_scan = set(candidate_ips)
         
         # Expand subnets to individual IPs
-        for subnet in targets.get("subnets", []):
+        subnets = targets.get("subnets", [])
+        logger.info(f"Found {len(subnets)} subnets in targets file")
+        
+        for subnet in subnets:
             try:
+                logger.debug(f"Processing subnet: {subnet}")
                 network = ip_network(subnet)
                 # Only add hosts from reasonably sized networks
                 if network.num_addresses <= 1024:  # Limit to avoid scanning huge ranges
-                    ips_to_scan.update(str(ip) for ip in network.hosts())
+                    host_ips = [str(ip) for ip in network.hosts()]
+                    ips_to_scan.update(host_ips)
+                    logger.info(f"Added {len(host_ips)} IPs from subnet {subnet}")
+                else:
+                    logger.warning(f"Skipping subnet {subnet} - too large ({network.num_addresses} addresses)")
             except ValueError:
-                logger.warning(f"Invalid subnet: {subnet}")
+                logger.warning(f"Invalid subnet format: {subnet}")
         
         # Perform the scan
+        logger.info(f"Starting scan of {len(ips_to_scan)} IPs with {len(ports)} ports at concurrency {concurrency}")
+        start_time = time.time()
         scan_results = await _scan_ips(list(ips_to_scan), ports, concurrency)
+        scan_duration = time.time() - start_time
+        logger.info(f"Scan completed in {scan_duration:.2f} seconds")
         
         # Build scan output
+        logger.info(f"Processing scan results for {len(scan_results)} hosts")
         scan_output = {
             "job_id": job_id,
             "scanned_at": datetime.utcnow().isoformat() + "Z",
@@ -123,21 +152,30 @@ async def scan_from_targets(
         
         # Save scan results
         scan_path = get_scan_path(job_id)
+        logger.info(f"Saving scan results to {scan_path}")
         atomic_write_json(scan_output, scan_path)
+        logger.info(f"Scan results saved successfully")
         
         # Create and save reachable hosts file
+        logger.info("Extracting reachable hosts from scan results")
         reachable_hosts = [host for host in scan_results if host.get("reachable", False)]
+        logger.info(f"Found {len(reachable_hosts)} reachable hosts out of {len(scan_results)} total hosts")
+        
         reachable_output = {
             "job_id": job_id,
             "scanned_at": datetime.utcnow().isoformat() + "Z",
             "reachable_count": len(reachable_hosts),
             "hosts": reachable_hosts
         }
+        
         reachable_path = get_reachable_hosts_path(job_id)
+        logger.info(f"Saving reachable hosts to {reachable_path}")
         atomic_write_json(reachable_output, reachable_path)
+        logger.info("Reachable hosts saved successfully")
         
         # Update status
         reachable_count = len(reachable_hosts)
+        logger.info(f"Updating job status: {reachable_count} reachable hosts out of {len(scan_results)} scanned")
         update_status(
             job_id, 
             "scanner", 
@@ -146,6 +184,7 @@ async def scan_from_targets(
             hosts_reachable=reachable_count,
             completed_at=datetime.utcnow().isoformat() + "Z"
         )
+        logger.info(f"Job {job_id} scan completed successfully")
         
         return {
             "job_id": job_id,
@@ -233,6 +272,7 @@ async def scan_from_subnets(
         
         # Update status
         reachable_count = len(reachable_hosts)
+        logger.info(f"Updating job status: {reachable_count} reachable hosts out of {len(scan_results)} scanned")
         update_status(
             job_id, 
             "scanner", 
@@ -241,6 +281,7 @@ async def scan_from_subnets(
             hosts_reachable=reachable_count,
             completed_at=datetime.utcnow().isoformat() + "Z"
         )
+        logger.info(f"Job {job_id} scan completed successfully")
         
         return {
             "job_id": job_id,
@@ -374,29 +415,50 @@ async def _scan_ips(ips: List[str], ports: List[int], concurrency: int) -> List[
     Returns:
         List[Dict]: Scan results for each IP
     """
+    logger.info(f"Starting scan of {len(ips)} IPs for ports {ports} with concurrency {concurrency}")
     results = []
     semaphore = asyncio.Semaphore(concurrency)
     
     # First check reachability with fping if available
     reachable_ips = set()
     if FPING_AVAILABLE and ips:
+        logger.info(f"Using fping to pre-check reachability of {len(ips)} IPs")
+        start_time = time.time()
         reachable_ips = await _check_reachability_fping(ips)
+        duration = time.time() - start_time
+        logger.info(f"fping completed in {duration:.2f}s, found {len(reachable_ips)} reachable IPs")
+    else:
+        logger.info("fping not available, will check each IP individually")
     
     # Create tasks for each IP
     tasks = []
+    scan_count = 0
     for ip in ips:
         # Only scan for open ports if the IP is reachable or if fping is not available
         if not FPING_AVAILABLE or ip in reachable_ips:
             task = _scan_ip_with_semaphore(ip, ports, semaphore)
             tasks.append(task)
+            scan_count += 1
+    
+    logger.info(f"Created {scan_count} scan tasks")
     
     # Wait for all tasks to complete
     if tasks:
+        logger.info(f"Starting port scan for {len(tasks)} IPs")
+        start_time = time.time()
         scan_results = await asyncio.gather(*tasks)
+        duration = time.time() - start_time
+        logger.info(f"Port scanning completed in {duration:.2f}s")
+        
+        # Count open ports
+        open_ports = sum(1 for result in scan_results for port, status in result.get("ports", {}).items() if status == "open")
+        logger.info(f"Found {open_ports} open ports across {len(scan_results)} hosts")
+        
         results.extend(scan_results)
     
     # Add unreachable IPs to results
     if FPING_AVAILABLE:
+        unreachable_count = 0
         for ip in ips:
             if ip not in reachable_ips:
                 results.append({
@@ -404,7 +466,12 @@ async def _scan_ips(ips: List[str], ports: List[int], concurrency: int) -> List[
                     "reachable": False,
                     "ports": {str(port): "closed" for port in ports}
                 })
+                unreachable_count += 1
+        
+        if unreachable_count > 0:
+            logger.info(f"Added {unreachable_count} unreachable IPs to results")
     
+    logger.info(f"Scan completed for {len(results)} hosts")
     return results
 
 async def _check_reachability_fping(ips: List[str]) -> Set[str]:
@@ -421,27 +488,49 @@ async def _check_reachability_fping(ips: List[str]) -> Set[str]:
     
     # Split into chunks to avoid command line length limits
     chunk_size = 100
+    total_chunks = (len(ips) + chunk_size - 1) // chunk_size
+    logger.info(f"Splitting {len(ips)} IPs into {total_chunks} chunks of {chunk_size} for fping")
+    
     for i in range(0, len(ips), chunk_size):
+        chunk_num = i // chunk_size + 1
         chunk = ips[i:i+chunk_size]
+        logger.debug(f"Processing chunk {chunk_num}/{total_chunks} with {len(chunk)} IPs")
         
         # Run fping
         cmd = ["fping", "-a", "-q"]
         cmd.extend(chunk)
         
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, _ = await proc.communicate()
-        
-        # Parse output (one reachable IP per line)
-        for line in stdout.decode().strip().split("\n"):
-            ip = line.strip()
-            if ip:
-                reachable_ips.add(ip)
+        try:
+            start_time = time.time()
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await proc.communicate()
+            duration = time.time() - start_time
+            
+            # Parse output (one reachable IP per line)
+            reachable_in_chunk = 0
+            for line in stdout.decode().strip().split("\n"):
+                ip = line.strip()
+                if ip:
+                    reachable_ips.add(ip)
+                    reachable_in_chunk += 1
+            
+            logger.debug(f"Chunk {chunk_num} completed in {duration:.2f}s, found {reachable_in_chunk} reachable IPs")
+            
+            # Log any errors from stderr
+            stderr_output = stderr.decode().strip()
+            if stderr_output and not stderr_output.startswith("ICMP"):  # Ignore normal ICMP unreachable messages
+                logger.debug(f"fping stderr for chunk {chunk_num}: {stderr_output}")
+                
+        except Exception as e:
+            logger.error(f"Error running fping on chunk {chunk_num}: {str(e)}")
+            logger.error(traceback.format_exc())
     
+    logger.info(f"fping found {len(reachable_ips)} reachable IPs out of {len(ips)} total")
     return reachable_ips
 
 async def _scan_ip_with_semaphore(ip: str, ports: List[int], semaphore: asyncio.Semaphore) -> Dict:
@@ -460,32 +549,44 @@ async def _scan_ip(ip: str, ports: List[int]) -> Dict:
     Returns:
         Dict: Scan results for the IP
     """
+    logger.debug(f"Scanning IP {ip} for {len(ports)} ports")
     start_time = time.time()
     port_results = {}
     banner = None
+    open_ports = 0
     
     # Check each port
     for port in ports:
         is_open, port_banner = await _check_port(ip, port)
         port_results[str(port)] = "open" if is_open else "closed"
         
-        # Store the first banner we find
-        if is_open and port_banner and not banner:
-            banner = port_banner
+        if is_open:
+            open_ports += 1
+            logger.debug(f"Port {port} is OPEN on {ip}")
+            
+            # Store the first banner we find
+            if port_banner and not banner:
+                banner = port_banner
+                logger.debug(f"Captured banner from {ip}:{port} - {banner}")
     
     # Calculate latency
-    latency_ms = int((time.time() - start_time) * 1000 / len(ports))
+    scan_duration = time.time() - start_time
+    latency_ms = int(scan_duration * 1000 / len(ports))
     
     # Build result
+    is_reachable = any(status == "open" for status in port_results.values())
     result = {
         "ip": ip,
-        "reachable": any(status == "open" for status in port_results.values()),
+        "reachable": is_reachable,
         "latency_ms": latency_ms,
         "ports": port_results
     }
     
     if banner:
         result["banner"] = banner
+    
+    status = "reachable" if is_reachable else "unreachable"
+    logger.debug(f"IP {ip} scan completed in {scan_duration:.3f}s - {status} with {open_ports} open ports")
     
     return result
 
@@ -502,61 +603,88 @@ async def _check_port(ip: str, port: int) -> Tuple[bool, Optional[str]]:
     """
     try:
         # Create a socket and set a timeout
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, port),
-            timeout=CONNECT_TIMEOUT
-        )
-        
-        # Port is open, try to get a banner
-        banner = None
+        logger.debug(f"Checking {ip}:{port} with timeout {CONNECT_TIMEOUT}s")
+        start_time = time.time()
         
         try:
-            if port == 22:
-                # Try to get SSH banner
-                banner_data = await asyncio.wait_for(reader.read(100), timeout=1.0)
-                banner = banner_data.decode('utf-8', errors='ignore').strip()
-                
-                # Only keep the first line of SSH banner
-                if banner:
-                    banner = banner.split('\n')[0]
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(ip, port),
+                timeout=CONNECT_TIMEOUT
+            )
+            connection_time = time.time() - start_time
+            logger.debug(f"Connection to {ip}:{port} successful in {connection_time:.3f}s")
             
-            elif port == 443:
-                # Close the current connection
+            # Port is open, try to get a banner
+            banner = None
+            
+            try:
+                if port == 22:
+                    # Try to get SSH banner
+                    logger.debug(f"Attempting to read SSH banner from {ip}:{port}")
+                    banner_data = await asyncio.wait_for(reader.read(100), timeout=1.0)
+                    banner = banner_data.decode('utf-8', errors='ignore').strip()
+                    
+                    # Only keep the first line of SSH banner
+                    if banner:
+                        banner = banner.split('\n')[0]
+                        logger.debug(f"Received SSH banner from {ip}:{port}: {banner}")
+                
+                elif port == 443:
+                    # Close the current connection
+                    logger.debug(f"Closing initial connection to {ip}:{port} to establish SSL connection")
+                    writer.close()
+                    await writer.wait_closed()
+                    
+                    # Try to get HTTPS certificate CN
+                    logger.debug(f"Attempting SSL connection to {ip}:{port}")
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                    
+                    try:
+                        ssl_start_time = time.time()
+                        ssl_reader, ssl_writer = await asyncio.wait_for(
+                            asyncio.open_connection(ip, port, ssl=ssl_context),
+                            timeout=CONNECT_TIMEOUT
+                        )
+                        ssl_connection_time = time.time() - ssl_start_time
+                        logger.debug(f"SSL connection to {ip}:{port} successful in {ssl_connection_time:.3f}s")
+                        
+                        # Get the certificate
+                        cert = ssl_writer.get_extra_info('peercert')
+                        if cert:
+                            for attr in cert.get('subject', []):
+                                if attr[0][0] == 'commonName':
+                                    banner = f"CN={attr[0][1]}"
+                                    logger.debug(f"Extracted certificate CN from {ip}:{port}: {banner}")
+                                    break
+                        else:
+                            logger.debug(f"No certificate found for {ip}:{port}")
+                        
+                        ssl_writer.close()
+                        await ssl_writer.wait_closed()
+                    except Exception as ssl_error:
+                        logger.debug(f"SSL connection to {ip}:{port} failed: {str(ssl_error)}")
+            except Exception as banner_error:
+                logger.debug(f"Failed to get banner from {ip}:{port}: {str(banner_error)}")
+            
+            # Close the connection
+            if port != 443:  # Already closed for HTTPS
                 writer.close()
                 await writer.wait_closed()
-                
-                # Try to get HTTPS certificate CN
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                
-                try:
-                    ssl_reader, ssl_writer = await asyncio.wait_for(
-                        asyncio.open_connection(ip, port, ssl=ssl_context),
-                        timeout=CONNECT_TIMEOUT
-                    )
-                    
-                    # Get the certificate
-                    cert = ssl_writer.get_extra_info('peercert')
-                    if cert:
-                        for attr in cert.get('subject', []):
-                            if attr[0][0] == 'commonName':
-                                banner = f"CN={attr[0][1]}"
-                                break
-                    
-                    ssl_writer.close()
-                    await ssl_writer.wait_closed()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        
-        # Close the connection
-        if port != 443:  # Already closed for HTTPS
-            writer.close()
-            await writer.wait_closed()
-        
-        return True, banner
-    
-    except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
+            
+            return True, banner
+            
+        except asyncio.TimeoutError:
+            logger.debug(f"Connection to {ip}:{port} timed out after {CONNECT_TIMEOUT}s")
+            return False, None
+        except ConnectionRefusedError:
+            logger.debug(f"Connection to {ip}:{port} refused")
+            return False, None
+        except OSError as e:
+            logger.debug(f"OS error connecting to {ip}:{port}: {str(e)}")
+            return False, None
+            
+    except Exception as e:
+        logger.debug(f"Unexpected error checking {ip}:{port}: {str(e)}")
         return False, None

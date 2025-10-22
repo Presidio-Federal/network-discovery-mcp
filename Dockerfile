@@ -6,6 +6,7 @@ WORKDIR /app
 # Install system dependencies for Python builds and network tools
 RUN apt-get update && apt-get install -y \
     gcc \
+    build-essential \
     python3-dev \
     git \
     default-jre \
@@ -14,12 +15,9 @@ RUN apt-get update && apt-get install -y \
 # Set up Java environment
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 
-# Install pybatfish and its dependencies first
-RUN pip install --no-cache-dir \
-    pandas \
-    matplotlib \
-    networkx \
-    pybatfish
+# Install pybatfish first to ensure it's properly installed
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir pybatfish==2023.12.1
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
@@ -65,6 +63,7 @@ ENV ARTIFACT_DIR=/artifacts
 ENV DEFAULT_PORTS=22,443
 ENV DEFAULT_CONCURRENCY=200
 ENV CONNECT_TIMEOUT=1.5
+ENV PYTHONPATH=/app
 
 # Expose API port
 EXPOSE 8000
