@@ -1,8 +1,8 @@
 """
 Batfish loader module for network analysis.
 
-This module builds Batfish snapshots from collected device configurations
-and loads them into a Batfish instance for analysis.
+This module loads Batfish snapshots from collected device configurations
+and analyzes them using a Batfish instance.
 """
 
 import asyncio
@@ -14,12 +14,19 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 import requests
-from pybatfish.client.commands import (
-    bf_init_snapshot,
-    bf_set_network,
-    bf_session
-)
-from pybatfish.question import bfq
+
+# Try to import pybatfish, but don't fail if it's not available
+try:
+    from pybatfish.client.commands import (
+        bf_init_snapshot,
+        bf_set_network,
+        bf_session
+    )
+    from pybatfish.question import bfq
+    BATFISH_AVAILABLE = True
+except ImportError:
+    BATFISH_AVAILABLE = False
+    logging.warning("pybatfish module not available. Batfish functionality will be limited.")
 
 from network_discovery.artifacts import (
     atomic_write_json,
@@ -34,7 +41,11 @@ logger = logging.getLogger(__name__)
 
 async def build_batfish_snapshot(job_id: str) -> Dict:
     """
-    Build a Batfish snapshot from collected device configurations.
+    Verify that the Batfish snapshot is ready.
+    
+    This function is kept for API compatibility, but now only verifies
+    that the config files exist since they are written directly by
+    the config_collector module.
     
     Args:
         job_id: Job identifier
@@ -46,11 +57,11 @@ async def build_batfish_snapshot(job_id: str) -> Dict:
         # Get job directory
         job_dir = get_job_dir(job_id)
         
-        # Get state directory
-        state_dir = job_dir / "state"
+        # Check if batfish_snapshot/configs directory exists
+        configs_dir = job_dir / "batfish_snapshot" / "configs"
         
-        if not state_dir.exists() or not state_dir.is_dir():
-            error_msg = f"State directory not found for job {job_id}"
+        if not configs_dir.exists() or not configs_dir.is_dir():
+            error_msg = f"Batfish configs directory not found for job {job_id}"
             logger.error(error_msg)
             log_error(job_id, "batfish_loader", error_msg)
             return {
@@ -59,52 +70,12 @@ async def build_batfish_snapshot(job_id: str) -> Dict:
                 "error": error_msg
             }
         
-        # Create batfish_snapshot directory structure
-        snapshot_dir = job_dir / "batfish_snapshot"
-        configs_dir = snapshot_dir / "configs"
-        configs_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Update status to building
-        update_status(
-            job_id,
-            "batfish_loader",
-            "building",
-            started_at=datetime.utcnow().isoformat() + "Z"
-        )
-        
-        # Process each state file
-        device_count = 0
-        
-        for state_file in state_dir.glob("*.json"):
-            try:
-                # Read state file
-                state_data = read_json(state_file)
-                
-                if not state_data or "running_config" not in state_data:
-                    logger.warning(f"No running config found in {state_file}")
-                    continue
-                
-                # Extract hostname and running config
-                hostname = state_data.get("hostname", state_file.stem)
-                running_config = state_data.get("running_config", "")
-                
-                if not running_config:
-                    logger.warning(f"Empty running config for {hostname}")
-                    continue
-                
-                # Write config file
-                config_file = configs_dir / f"{hostname}.cfg"
-                with open(config_file, "w") as f:
-                    f.write(running_config)
-                
-                device_count += 1
-                logger.info(f"Wrote config for {hostname}")
-                
-            except Exception as e:
-                logger.error(f"Error processing {state_file}: {str(e)}")
+        # Count config files
+        config_files = list(configs_dir.glob("*.cfg"))
+        device_count = len(config_files)
         
         if device_count == 0:
-            error_msg = f"No valid device configurations found for job {job_id}"
+            error_msg = f"No config files found in batfish_snapshot/configs for job {job_id}"
             logger.error(error_msg)
             log_error(job_id, "batfish_loader", error_msg)
             return {
@@ -130,7 +101,7 @@ async def build_batfish_snapshot(job_id: str) -> Dict:
             "device_count": device_count
         }
     except Exception as e:
-        error_msg = f"Failed to build Batfish snapshot: {str(e)}"
+        error_msg = f"Failed to verify Batfish snapshot: {str(e)}"
         logger.error(error_msg)
         log_error(job_id, "batfish_loader", error_msg)
         
@@ -160,6 +131,16 @@ async def load_batfish_snapshot(job_id: str, batfish_host: str = "http://batfish
     Returns:
         Dict: Load results with job_id and status
     """
+    if not BATFISH_AVAILABLE:
+        error_msg = "pybatfish module not available. Cannot load snapshot."
+        logger.error(error_msg)
+        log_error(job_id, "batfish_loader", error_msg)
+        return {
+            "job_id": job_id,
+            "status": "failed",
+            "error": error_msg
+        }
+        
     try:
         # Get job directory
         job_dir = get_job_dir(job_id)
@@ -244,6 +225,16 @@ async def get_topology(job_id: str, batfish_host: str = "http://batfish:9997") -
     Returns:
         Dict: Topology with job_id and edges
     """
+    if not BATFISH_AVAILABLE:
+        error_msg = "pybatfish module not available. Cannot get topology."
+        logger.error(error_msg)
+        log_error(job_id, "batfish_loader", error_msg)
+        return {
+            "job_id": job_id,
+            "status": "failed",
+            "error": error_msg
+        }
+        
     try:
         # Configure Batfish session
         bf_session.host = batfish_host

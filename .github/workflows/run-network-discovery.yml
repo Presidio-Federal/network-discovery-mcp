@@ -1,0 +1,547 @@
+name: Run Network Discovery
+
+env:
+  # Default values for discovery parameters
+  TIMEOUT: 60
+  MAX_WAIT_TIME: 1800
+  POLL_INTERVAL: 10
+  CONCURRENCY: 100
+  API_PORT: 8000
+  ARTIFACTS_DIR: ./artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed_devices:
+        description: 'Comma-separated list of seed devices (IP:PORT)'
+        required: true
+        default: '192.168.1.1,10.0.0.1:22,172.16.1.1:4446'
+      username:
+        description: 'Primary username for device authentication'
+        required: true
+        default: 'admin'
+      password:
+        description: 'Password for device authentication (use GitHub secrets for production)'
+        required: false
+        default: ''
+      use_multiple_credentials:
+        description: 'Use multiple credential sets'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      additional_usernames:
+        description: 'Additional usernames (comma-separated, if multiple credentials enabled)'
+        required: false
+        default: 'cisco,operator'
+      discovery_mode:
+        description: 'Discovery phase to execute'
+        required: true
+        default: 'full-pipeline'
+        type: choice
+        options:
+          - full-pipeline
+          - seed-only
+          - scan-only
+          - fingerprint-only
+          - state-collect-only
+          - batfish-only
+      probe_ports:
+        description: 'TCP ports to probe during scan (comma-separated)'
+        required: false
+        default: '22,443'
+      snmp_community:
+        description: 'SNMP community string for fingerprinting (optional)'
+        required: false
+        default: 'public'
+      job_id:
+        description: 'Custom job ID (optional)'
+        required: false
+
+jobs:
+  run-discovery:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      # Install required tools
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+      
+      # Create artifacts directory
+      - name: Create artifacts directory
+        run: |
+          mkdir -p ${{ env.ARTIFACTS_DIR }}
+          chmod 777 ${{ env.ARTIFACTS_DIR }}
+      
+      # Start the discovery service using docker-compose
+      - name: Start discovery services
+        run: |
+          echo "Starting network discovery services..."
+          docker-compose up -d
+          
+          # Wait for service to start
+          echo "Waiting for service to start..."
+          MAX_RETRIES=30
+          RETRY_COUNT=0
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if curl -s http://localhost:${{ env.API_PORT }}/ > /dev/null; then
+              echo "Service is up and running"
+              break
+            fi
+            
+            echo "Waiting for service to start (attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
+            sleep 2
+            RETRY_COUNT=$((RETRY_COUNT+1))
+          done
+          
+          if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+            echo "Service failed to start within the timeout period"
+            docker-compose logs
+            docker-compose down
+            exit 1
+          fi
+      
+      # Prepare job ID
+      - name: Prepare job ID
+        id: job_setup
+        run: |
+          # Set job ID if provided, otherwise generate one
+          if [ -n "${{ github.event.inputs.job_id }}" ]; then
+            JOB_ID="${{ github.event.inputs.job_id }}"
+          else
+            JOB_ID=$(uuidgen | tr -d '-')
+          fi
+          
+          echo "job_id=$JOB_ID" >> $GITHUB_OUTPUT
+          echo "Using job ID: $JOB_ID"
+      
+      # Prepare credentials
+      - name: Prepare credentials
+        id: credentials
+        run: |
+          # Get password from input or secret
+          PASSWORD="${{ github.event.inputs.password }}"
+          if [ -z "$PASSWORD" ]; then
+            PASSWORD="${{ secrets.DEVICE_PASSWORD }}"
+          fi
+          
+          if [ "${{ github.event.inputs.use_multiple_credentials }}" == "true" ]; then
+            # Start with primary username
+            USERNAMES=("${{ github.event.inputs.username }}")
+            PASSWORDS=("$PASSWORD")
+            
+            # Add additional usernames if provided
+            if [ -n "${{ github.event.inputs.additional_usernames }}" ]; then
+              IFS=',' read -r -a ADDITIONAL_USERNAMES <<< "${{ github.event.inputs.additional_usernames }}"
+              USERNAMES+=("${ADDITIONAL_USERNAMES[@]}")
+              
+              # Try to get passwords from secrets
+              for i in "${!ADDITIONAL_USERNAMES[@]}"; do
+                secret_name="ALT_DEVICE_PASSWORD_$((i+1))"
+                password_var="secrets.${secret_name}"
+                alt_password="${!password_var}"
+                if [ -z "$alt_password" ]; then
+                  alt_password="${{ secrets.ALT_DEVICE_PASSWORD }}"
+                fi
+                if [ -z "$alt_password" ]; then
+                  alt_password="$PASSWORD"  # Fallback to primary password
+                fi
+                PASSWORDS+=("$alt_password")
+              done
+            fi
+            
+            # Build credentials JSON array
+            CREDENTIALS="["
+            for i in "${!USERNAMES[@]}"; do
+              if [ $i -gt 0 ]; then
+                CREDENTIALS="${CREDENTIALS},"
+              fi
+              CREDENTIALS="${CREDENTIALS}{\"username\": \"${USERNAMES[$i]}\", \"password\": \"${PASSWORDS[$i]}\"}"
+            done
+            CREDENTIALS="${CREDENTIALS}]"
+            
+            echo "Using ${#USERNAMES[@]} credential sets"
+          else
+            # Just use the primary username/password
+            CREDENTIALS="{\"username\": \"${{ github.event.inputs.username }}\", \"password\": \"$PASSWORD\"}"
+            echo "Using single credential set"
+          fi
+          
+          # Save credentials to a file (safer than environment variable for JSON)
+          echo "$CREDENTIALS" > credentials.json
+          echo "credentials_file=credentials.json" >> $GITHUB_OUTPUT
+      
+      # Phase 1: Seed Collection
+      - name: Run seed collection
+        id: seed
+        if: ${{ github.event.inputs.discovery_mode == 'full-pipeline' || github.event.inputs.discovery_mode == 'seed-only' }}
+        run: |
+          JOB_ID="${{ steps.job_setup.outputs.job_id }}"
+          CREDS=$(cat ${{ steps.credentials.outputs.credentials_file }})
+          
+          # Convert comma-separated list to array
+          IFS=',' read -ra SEED_DEVICES <<< "${{ github.event.inputs.seed_devices }}"
+          
+          for SEED_DEVICE in "${SEED_DEVICES[@]}"; do
+            echo "Running seed collection for $SEED_DEVICE..."
+            
+            RESPONSE=$(curl -s -X POST "http://localhost:${{ env.API_PORT }}/v1/seed" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"seed_host\": \"$SEED_DEVICE\",
+                \"credentials\": $CREDS,
+                \"job_id\": \"$JOB_ID\",
+                \"methods\": [\"interfaces\", \"routing\", \"arp\", \"cdp\"]
+              }")
+            
+            echo "Seed API response: $RESPONSE"
+          done
+          
+          # Wait for seed collection to complete
+          echo "Waiting for seed collection to complete..."
+          MAX_WAIT_TIME=${{ env.MAX_WAIT_TIME }}
+          WAIT_INTERVAL=${{ env.POLL_INTERVAL }}
+          ELAPSED_TIME=0
+          
+          while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]; do
+            STATUS_RESPONSE=$(curl -s "http://localhost:${{ env.API_PORT }}/v1/status/$JOB_ID")
+            
+            if echo "$STATUS_RESPONSE" | grep -q "\"seeder\":{\"status\":\"completed\""; then
+              echo "Seed collection completed"
+              break
+            elif echo "$STATUS_RESPONSE" | grep -q "\"seeder\":{\"status\":\"failed\""; then
+              echo "Seed collection failed"
+              echo "$STATUS_RESPONSE"
+              exit 1
+            fi
+            
+            echo "Seed collection in progress (waited ${ELAPSED_TIME}s)"
+            sleep $WAIT_INTERVAL
+            ELAPSED_TIME=$((ELAPSED_TIME + WAIT_INTERVAL))
+          done
+          
+          if [ $ELAPSED_TIME -ge $MAX_WAIT_TIME ]; then
+            echo "Warning: Seed collection timed out after ${MAX_WAIT_TIME}s"
+          fi
+          
+          # Get targets.json
+          echo "Retrieving targets.json..."
+          curl -s "http://localhost:${{ env.API_PORT }}/v1/artifacts/$JOB_ID/targets.json" -o targets.json
+          
+          # Display summary
+          if [ -f targets.json ]; then
+            echo "Seed collection results:"
+            if command -v jq &> /dev/null; then
+              echo "Subnets: $(jq '.subnets | length' targets.json)"
+              echo "Candidate IPs: $(jq '.candidate_ips | length' targets.json)"
+            else
+              cat targets.json
+            fi
+          else
+            echo "Failed to retrieve targets.json"
+          fi
+      
+      # Phase 2: IP Scanning
+      - name: Run IP scanning
+        id: scan
+        if: ${{ github.event.inputs.discovery_mode == 'full-pipeline' || github.event.inputs.discovery_mode == 'scan-only' }}
+        run: |
+          JOB_ID="${{ steps.job_setup.outputs.job_id }}"
+          
+          # Process probe ports
+          IFS=',' read -ra PORT_ARRAY <<< "${{ github.event.inputs.probe_ports }}"
+          PROBE_PORTS="["
+          for port in "${PORT_ARRAY[@]}"; do
+            if [ "$PROBE_PORTS" != "[" ]; then
+              PROBE_PORTS="$PROBE_PORTS,"
+            fi
+            PROBE_PORTS="$PROBE_PORTS$port"
+          done
+          PROBE_PORTS="$PROBE_PORTS]"
+          
+          echo "Running IP scan with ports $PROBE_PORTS..."
+          RESPONSE=$(curl -s -X POST "http://localhost:${{ env.API_PORT }}/v1/scan" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"$JOB_ID\",
+              \"ports\": $PROBE_PORTS,
+              \"concurrency\": ${{ env.CONCURRENCY }}
+            }")
+          
+          echo "Scan API response: $RESPONSE"
+          
+          # Wait for scan to complete
+          echo "Waiting for IP scan to complete..."
+          MAX_WAIT_TIME=${{ env.MAX_WAIT_TIME }}
+          WAIT_INTERVAL=${{ env.POLL_INTERVAL }}
+          ELAPSED_TIME=0
+          
+          while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]; do
+            STATUS_RESPONSE=$(curl -s "http://localhost:${{ env.API_PORT }}/v1/status/$JOB_ID")
+            
+            if echo "$STATUS_RESPONSE" | grep -q "\"scanner\":{\"status\":\"completed\""; then
+              echo "IP scan completed"
+              break
+            elif echo "$STATUS_RESPONSE" | grep -q "\"scanner\":{\"status\":\"failed\""; then
+              echo "IP scan failed"
+              echo "$STATUS_RESPONSE"
+              exit 1
+            fi
+            
+            echo "IP scan in progress (waited ${ELAPSED_TIME}s)"
+            sleep $WAIT_INTERVAL
+            ELAPSED_TIME=$((ELAPSED_TIME + WAIT_INTERVAL))
+          done
+          
+          if [ $ELAPSED_TIME -ge $MAX_WAIT_TIME ]; then
+            echo "Warning: IP scan timed out after ${MAX_WAIT_TIME}s"
+          fi
+          
+          # Get scan results
+          echo "Retrieving scan results..."
+          curl -s "http://localhost:${{ env.API_PORT }}/v1/scan/$JOB_ID" -o ip_scan.json
+          curl -s "http://localhost:${{ env.API_PORT }}/v1/scan/$JOB_ID/reachable" -o reachable_hosts.json
+          
+          # Display summary
+          if [ -f ip_scan.json ]; then
+            echo "Scan results:"
+            if command -v jq &> /dev/null; then
+              echo "Total hosts scanned: $(jq '.hosts | length' ip_scan.json)"
+              echo "Reachable hosts: $(jq '.hosts | map(select(.reachable == true)) | length' ip_scan.json)"
+            else
+              cat reachable_hosts.json
+            fi
+          else
+            echo "Failed to retrieve scan results"
+          fi
+      
+      # Phase 3: Fingerprinting
+      - name: Run fingerprinting
+        id: fingerprint
+        if: ${{ github.event.inputs.discovery_mode == 'full-pipeline' || github.event.inputs.discovery_mode == 'fingerprint-only' }}
+        run: |
+          JOB_ID="${{ steps.job_setup.outputs.job_id }}"
+          
+          echo "Running fingerprinting..."
+          RESPONSE=$(curl -s -X POST "http://localhost:${{ env.API_PORT }}/v1/fingerprint" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"$JOB_ID\",
+              \"snmp_community\": \"${{ github.event.inputs.snmp_community }}\"
+            }")
+          
+          echo "Fingerprint API response: $RESPONSE"
+          
+          # Wait for fingerprinting to complete
+          echo "Waiting for fingerprinting to complete..."
+          MAX_WAIT_TIME=${{ env.MAX_WAIT_TIME }}
+          WAIT_INTERVAL=${{ env.POLL_INTERVAL }}
+          ELAPSED_TIME=0
+          
+          while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]; do
+            STATUS_RESPONSE=$(curl -s "http://localhost:${{ env.API_PORT }}/v1/status/$JOB_ID")
+            
+            if echo "$STATUS_RESPONSE" | grep -q "\"fingerprinter\":{\"status\":\"complete\""; then
+              echo "Fingerprinting completed"
+              break
+            elif echo "$STATUS_RESPONSE" | grep -q "\"fingerprinter\":{\"status\":\"failed\""; then
+              echo "Fingerprinting failed"
+              echo "$STATUS_RESPONSE"
+              exit 1
+            fi
+            
+            echo "Fingerprinting in progress (waited ${ELAPSED_TIME}s)"
+            sleep $WAIT_INTERVAL
+            ELAPSED_TIME=$((ELAPSED_TIME + WAIT_INTERVAL))
+          done
+          
+          if [ $ELAPSED_TIME -ge $MAX_WAIT_TIME ]; then
+            echo "Warning: Fingerprinting timed out after ${MAX_WAIT_TIME}s"
+          fi
+          
+          # Get fingerprint results
+          echo "Retrieving fingerprint results..."
+          curl -s "http://localhost:${{ env.API_PORT }}/v1/fingerprint/$JOB_ID" -o fingerprints.json
+          
+          # Display summary
+          if [ -f fingerprints.json ]; then
+            echo "Fingerprint results:"
+            if command -v jq &> /dev/null; then
+              echo "Fingerprinted hosts: $(jq '.hosts | length' fingerprints.json)"
+              echo "Identified vendors: $(jq '.hosts | map(.inference.vendor) | unique' fingerprints.json)"
+            else
+              cat fingerprints.json
+            fi
+          else
+            echo "Failed to retrieve fingerprint results"
+          fi
+      
+      # Phase 4: State Collection (now also creates Batfish configs)
+      - name: Run state collection
+        id: state
+        if: ${{ github.event.inputs.discovery_mode == 'full-pipeline' || github.event.inputs.discovery_mode == 'state-collect-only' }}
+        run: |
+          JOB_ID="${{ steps.job_setup.outputs.job_id }}"
+          CREDS=$(cat ${{ steps.credentials.outputs.credentials_file }})
+          
+          echo "Running state collection..."
+          RESPONSE=$(curl -s -X POST "http://localhost:${{ env.API_PORT }}/v1/state/collect" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"$JOB_ID\",
+              \"credentials\": $CREDS,
+              \"concurrency\": ${{ env.CONCURRENCY }}
+            }")
+          
+          echo "State collection API response: $RESPONSE"
+          
+          # Wait for state collection to complete
+          echo "Waiting for state collection to complete..."
+          MAX_WAIT_TIME=${{ env.MAX_WAIT_TIME }}
+          WAIT_INTERVAL=${{ env.POLL_INTERVAL }}
+          ELAPSED_TIME=0
+          
+          while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]; do
+            STATUS_RESPONSE=$(curl -s "http://localhost:${{ env.API_PORT }}/v1/status/$JOB_ID")
+            
+            if echo "$STATUS_RESPONSE" | grep -q "\"state_collector\":{\"status\":\"completed\""; then
+              echo "State collection completed"
+              break
+            elif echo "$STATUS_RESPONSE" | grep -q "\"state_collector\":{\"status\":\"failed\""; then
+              echo "State collection failed"
+              echo "$STATUS_RESPONSE"
+              exit 1
+            fi
+            
+            echo "State collection in progress (waited ${ELAPSED_TIME}s)"
+            sleep $WAIT_INTERVAL
+            ELAPSED_TIME=$((ELAPSED_TIME + WAIT_INTERVAL))
+          done
+          
+          if [ $ELAPSED_TIME -ge $MAX_WAIT_TIME ]; then
+            echo "Warning: State collection timed out after ${MAX_WAIT_TIME}s"
+          fi
+          
+          # List collected state files
+          echo "Listing state files in artifacts directory..."
+          ls -la ${{ env.ARTIFACTS_DIR }}/$JOB_ID/state/ || echo "No state files found"
+          
+          # List Batfish config files (now created directly by config_collector)
+          echo "Listing Batfish config files..."
+          ls -la ${{ env.ARTIFACTS_DIR }}/$JOB_ID/batfish_snapshot/configs/ || echo "No Batfish config files found"
+      
+      # Phase 5: Batfish Integration (now just loads the snapshot)
+      - name: Run Batfish integration
+        id: batfish
+        if: ${{ github.event.inputs.discovery_mode == 'full-pipeline' || github.event.inputs.discovery_mode == 'batfish-only' }}
+        run: |
+          JOB_ID="${{ steps.job_setup.outputs.job_id }}"
+          
+          # Skip build step as configs are already created by config_collector
+          # Just verify the snapshot is ready
+          echo "Verifying Batfish snapshot..."
+          BUILD_RESPONSE=$(curl -s -X POST "http://localhost:${{ env.API_PORT }}/v1/batfish/build" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"$JOB_ID\"
+            }")
+          
+          echo "Batfish verification response: $BUILD_RESPONSE"
+          
+          # Load Batfish snapshot
+          echo "Loading Batfish snapshot..."
+          LOAD_RESPONSE=$(curl -s -X POST "http://localhost:${{ env.API_PORT }}/v1/batfish/load" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"$JOB_ID\"
+            }")
+          
+          echo "Batfish load response: $LOAD_RESPONSE"
+          
+          # Wait for snapshot load to complete
+          echo "Waiting for snapshot load to complete..."
+          MAX_WAIT_TIME=300  # 5 minutes should be enough for snapshot load
+          WAIT_INTERVAL=5
+          ELAPSED_TIME=0
+          
+          while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]; do
+            STATUS_RESPONSE=$(curl -s "http://localhost:${{ env.API_PORT }}/v1/status/$JOB_ID")
+            
+            if echo "$STATUS_RESPONSE" | grep -q "\"batfish_loader\":{\"status\":\"loaded\""; then
+              echo "Snapshot load completed"
+              break
+            elif echo "$STATUS_RESPONSE" | grep -q "\"batfish_loader\":{\"status\":\"failed\""; then
+              echo "Snapshot load failed"
+              echo "$STATUS_RESPONSE"
+              exit 1
+            fi
+            
+            echo "Snapshot load in progress (waited ${ELAPSED_TIME}s)"
+            sleep $WAIT_INTERVAL
+            ELAPSED_TIME=$((ELAPSED_TIME + WAIT_INTERVAL))
+          done
+          
+          if [ $ELAPSED_TIME -ge $MAX_WAIT_TIME ]; then
+            echo "Warning: Snapshot load timed out after ${MAX_WAIT_TIME}s"
+            exit 1
+          fi
+          
+          # Get topology
+          echo "Retrieving network topology..."
+          curl -s "http://localhost:${{ env.API_PORT }}/v1/batfish/topology?job_id=$JOB_ID" -o topology.json
+          
+          # Display topology
+          if [ -f topology.json ]; then
+            echo "Network topology:"
+            if command -v jq &> /dev/null; then
+              echo "Edges: $(jq '.edges | length' topology.json)"
+              echo "Sample edges: $(jq '.edges | .[0:3]' topology.json)"
+            else
+              head -n 20 topology.json
+            fi
+          else
+            echo "Failed to retrieve network topology"
+          fi
+      
+      # Export artifacts
+      - name: Export artifacts
+        run: |
+          JOB_ID="${{ steps.job_setup.outputs.job_id }}"
+          
+          # Create export directory
+          mkdir -p discovery_exports
+          
+          # Copy all artifacts from the job directory
+          echo "Copying artifacts from ${{ env.ARTIFACTS_DIR }}/$JOB_ID..."
+          cp -r ${{ env.ARTIFACTS_DIR }}/$JOB_ID/* discovery_exports/ || echo "No artifacts found"
+          
+          # List exported files
+          echo "Exported files:"
+          find discovery_exports -type f | sort
+      
+      # Upload artifacts
+      - name: Upload discovery results
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-discovery-results
+          path: discovery_exports/
+          retention-days: 7
+      
+      # Cleanup
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Cleaning up containers..."
+          docker-compose down
+          echo "Cleanup complete"
+          
+          # Remove credentials file
+          rm -f credentials.json

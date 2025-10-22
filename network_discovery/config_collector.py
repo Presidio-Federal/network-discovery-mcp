@@ -3,6 +3,8 @@ Config collector module for retrieving device configurations.
 
 This module retrieves each device's running configuration in parallel and stores
 it as a separate JSON file under {job_dir}/state/{hostname}.json.
+It also writes the raw configuration directly to {job_dir}/batfish_snapshot/configs/{hostname}.cfg
+for immediate use by Batfish without requiring conversion.
 """
 
 import asyncio
@@ -82,6 +84,10 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
         state_dir = get_state_dir(job_id)
         state_dir.mkdir(parents=True, exist_ok=True)
         
+        # Ensure batfish snapshot directory exists
+        batfish_configs_dir = get_batfish_configs_dir(job_id)
+        batfish_configs_dir.mkdir(parents=True, exist_ok=True)
+        
         # Filter for reachable devices with known vendors
         devices = []
         for host in fingerprints["hosts"]:
@@ -141,7 +147,17 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
             else:
                 failed_count += 1
         
-        # Update status
+        # Update batfish_loader status to indicate configs are ready for loading
+        update_status(
+            job_id,
+            "batfish_loader",
+            "built",
+            snapshot_dir="batfish_snapshot/configs",
+            device_count=success_count,
+            completed_at=datetime.utcnow().isoformat() + "Z"
+        )
+        
+        # Update state_collector status
         update_status(
             job_id,
             "state_collector",
@@ -242,6 +258,10 @@ async def collect_single_state(job_id: str, creds: Dict, hostname: str) -> Dict:
         # Ensure state directory exists
         state_dir = get_state_dir(job_id)
         state_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure batfish snapshot directory exists
+        batfish_configs_dir = get_batfish_configs_dir(job_id)
+        batfish_configs_dir.mkdir(parents=True, exist_ok=True)
         
         # Collect configuration
         semaphore = asyncio.Semaphore(1)  # Single device, so semaphore of 1
@@ -423,14 +443,20 @@ async def _collect_device_config(
                 "running_config": config
             }
             
-            # Save state data
+            # Save state data to JSON
             state_path = get_state_path(job_id, hostname)
             atomic_write_json(state_data, state_path)
+            
+            # Write raw config directly to Batfish snapshot directory
+            batfish_config_path = get_batfish_config_path(job_id, hostname)
+            with open(batfish_config_path, "w") as f:
+                f.write(config)
             
             return {
                 "status": "success",
                 "hostname": hostname,
-                "state_path": str(state_path)
+                "state_path": str(state_path),
+                "batfish_path": str(batfish_config_path)
             }
         except Exception as e:
             logger.error(f"Failed to collect config from {device.get('hostname', device['ip'])}: {str(e)}")
@@ -654,3 +680,36 @@ def get_state_path(job_id: str, hostname: str) -> Path:
     state_dir.mkdir(parents=True, exist_ok=True)
     
     return state_dir / f"{safe_hostname}.json"
+
+def get_batfish_configs_dir(job_id: str) -> Path:
+    """
+    Get the path to the Batfish configs directory for a job.
+    
+    Args:
+        job_id: Job identifier
+        
+    Returns:
+        Path: Path to Batfish configs directory
+    """
+    batfish_dir = get_job_dir(job_id) / "batfish_snapshot" / "configs"
+    batfish_dir.mkdir(parents=True, exist_ok=True)
+    return batfish_dir
+
+def get_batfish_config_path(job_id: str, hostname: str) -> Path:
+    """
+    Get the path to a Batfish config file.
+    
+    Args:
+        job_id: Job identifier
+        hostname: Device hostname or IP
+        
+    Returns:
+        Path: Path to Batfish config file
+    """
+    # Sanitize hostname for use as a filename
+    safe_hostname = hostname.replace(":", "_").replace("/", "_")
+    
+    # Get Batfish configs directory
+    configs_dir = get_batfish_configs_dir(job_id)
+    
+    return configs_dir / f"{safe_hostname}.cfg"
