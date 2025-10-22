@@ -11,6 +11,7 @@ services:
       - "8000:8000"
     depends_on:
       - batfish
+    network_mode: "host"  # Use host network to access devices directly
 
   batfish:
     image: batfish/allinone:latest
