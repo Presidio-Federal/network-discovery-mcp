@@ -18,6 +18,7 @@ from network_discovery.artifacts import get_job_dir, read_json
 from network_discovery.config import DEFAULT_CONCURRENCY, DEFAULT_PORTS, DEFAULT_SEEDER_METHODS
 from network_discovery.scanner import get_scan, get_reachable_hosts
 from network_discovery.fingerprinter import get_fingerprints
+from network_discovery.direct_connect import direct_collect_routing
 from network_discovery.workers import (
     start_add_subnets,
     start_scanner,
@@ -91,6 +92,13 @@ class BatfishBuildRequest(BaseModel):
 class BatfishLoadRequest(BaseModel):
     job_id: str
     batfish_host: Optional[str] = None
+
+class DebugRoutingRequest(BaseModel):
+    hostname: str
+    username: str
+    password: str
+    port: int = 22
+    platform: str = "cisco_ios"
 
 # API endpoints
 @app.post("/v1/seed", response_model=Dict)
@@ -423,3 +431,24 @@ async def get_topology(job_id: str, batfish_host: Optional[str] = None):
     except Exception as e:
         logger.error(f"Error in get_topology endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Debug endpoints
+@app.post("/debug/routing", response_model=Dict)
+async def debug_routing(request: DebugRoutingRequest):
+    """
+    Debug endpoint to directly test routing collection from a device.
+    
+    This endpoint uses a direct Netmiko connection to collect routing information.
+    """
+    try:
+        result = direct_collect_routing(
+            request.hostname,
+            request.username,
+            request.password,
+            request.port,
+            request.platform
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error in debug_routing endpoint: {str(e)}")
+        return {"error": str(e), "traceback": str(e.__traceback__)}
