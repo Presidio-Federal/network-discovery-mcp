@@ -15,30 +15,52 @@ from typing import Dict, List, Optional, Any
 
 import requests
 
+# Import system modules needed for error reporting
+import sys
+import traceback
+
+# Configure logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
 # Try to import pybatfish, but don't fail if it's not available
+BATFISH_AVAILABLE = False
 try:
-    import sys
-    import traceback
+    # First try direct import
     import pybatfish
-    from pybatfish.client.commands import (
-        bf_init_snapshot,
-        bf_set_network,
-        bf_session
-    )
+    
+    # Then try to import specific modules
+    from pybatfish.client.commands import bf_init_snapshot, bf_set_network, bf_session
     from pybatfish.question import bfq
+    
+    # If we get here, everything imported successfully
     BATFISH_AVAILABLE = True
-    logging.info(f"Successfully imported pybatfish version {pybatfish.__version__}")
+    logger.info(f"Successfully imported pybatfish version {pybatfish.__version__}")
+    
 except ImportError as e:
-    BATFISH_AVAILABLE = False
     error_msg = f"pybatfish module not available: {str(e)}"
-    logging.error(error_msg)
-    logging.error(f"Python path: {sys.path}")
-    logging.error(f"Traceback: {traceback.format_exc()}")
+    logger.error(error_msg)
+    logger.error(f"Python path: {sys.path}")
+    logger.error(f"Python version: {sys.version}")
+    logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    # Try to get list of installed packages
+    try:
+        import subprocess
+        result = subprocess.run(['pip', 'list'], capture_output=True, text=True)
+        logger.error(f"Installed packages: {result.stdout}")
+    except Exception as pkg_e:
+        logger.error(f"Failed to list installed packages: {str(pkg_e)}")
+        
 except Exception as e:
-    BATFISH_AVAILABLE = False
     error_msg = f"Error importing pybatfish: {str(e)}"
-    logging.error(error_msg)
-    logging.error(f"Traceback: {traceback.format_exc()}")
+    logger.error(error_msg)
+    logger.error(f"Traceback: {traceback.format_exc()}")
 
 from network_discovery.artifacts import (
     atomic_write_json,

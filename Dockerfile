@@ -16,8 +16,12 @@ RUN apt-get update && apt-get install -y \
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 
 # Install pybatfish first to ensure it's properly installed
+# Use explicit PYTHONPATH to ensure modules can be found
+ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app
+
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --upgrade pybatfish
+    pip install --no-cache-dir --upgrade pybatfish && \
+    python -c "import pybatfish; print(f'Successfully installed pybatfish {pybatfish.__version__}')"
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
@@ -63,7 +67,7 @@ ENV ARTIFACT_DIR=/artifacts
 ENV DEFAULT_PORTS=22,443
 ENV DEFAULT_CONCURRENCY=200
 ENV CONNECT_TIMEOUT=1.5
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app
 
 # Expose API port
 EXPOSE 8000
