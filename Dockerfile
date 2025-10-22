@@ -1,12 +1,10 @@
 FROM python:3.11-slim
 
-# Install system dependencies including Java for pybatfish
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     fping \
     nmap \
     default-jre \
-    gcc \
-    python3-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -15,7 +13,7 @@ WORKDIR /app
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
@@ -26,7 +24,6 @@ ENV ARTIFACT_DIR=/tmp/network_discovery_artifacts
 ENV DEFAULT_PORTS=22,443
 ENV DEFAULT_CONCURRENCY=200
 ENV CONNECT_TIMEOUT=1.5
-ENV JAVA_HOME=/usr/lib/jvm/default-java
 
 # Expose API port
 EXPOSE 8000

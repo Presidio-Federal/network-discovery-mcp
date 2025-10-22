@@ -17,4 +17,4 @@ pysnmp>=4.4.12
 asyncssh>=2.13.2
 ncclient>=0.6.15
 requests>=2.32.3
-pybatfish>=2023.11.1
+pybatfish
