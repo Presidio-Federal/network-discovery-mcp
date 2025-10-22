@@ -18,6 +18,7 @@ import requests
 # Import system modules needed for error reporting
 import sys
 import traceback
+import os
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -34,9 +35,8 @@ try:
     # First try direct import
     import pybatfish
     
-    # Then try to import specific modules
-    from pybatfish.client.commands import bf_init_snapshot, bf_set_network, bf_session
-    from pybatfish.question import bfq
+    # Then try to import using the modern Session API
+    from pybatfish.client.session import Session
     
     # If we get here, everything imported successfully
     BATFISH_AVAILABLE = True
@@ -154,6 +154,39 @@ async def build_batfish_snapshot(job_id: str) -> Dict:
             "error": str(e)
         }
 
+def init_batfish(job_id: str, snapshot_path: str) -> Optional[Session]:
+    """
+    Initialize a Batfish Session, set the network, and load the snapshot.
+    
+    Args:
+        job_id: Job identifier
+        snapshot_path: Path to the snapshot directory
+        
+    Returns:
+        Session: Initialized Batfish Session object or None if initialization fails
+    """
+    if not BATFISH_AVAILABLE:
+        logger.error("pybatfish module not available. Cannot initialize Batfish session.")
+        return None
+        
+    try:
+        # Get Batfish host from environment or use default
+        host = os.getenv("BATFISH_HOST", "http://batfish:9997")
+        logger.info(f"Connecting to Batfish at {host}")
+        
+        # Initialize Session
+        bf = Session(host=host)
+        
+        # Set network and initialize snapshot
+        bf.set_network(job_id)
+        bf.init_snapshot(snapshot_path, name="snapshot_latest", overwrite=True)
+        
+        logger.info("Batfish snapshot initialized successfully.")
+        return bf
+    except Exception as e:
+        logger.error(f"Batfish initialization failed: {e}", exc_info=True)
+        return None
+
 async def load_batfish_snapshot(job_id: str, batfish_host: str = "http://batfish:9997") -> Dict:
     """
     Load a Batfish snapshot into a Batfish instance.
@@ -236,14 +269,8 @@ async def load_batfish_snapshot(job_id: str, batfish_host: str = "http://batfish
             started_at=datetime.utcnow().isoformat() + "Z"
         )
         
-        # Configure Batfish session
-        logger.info(f"Configuring Batfish session with host: {batfish_host}")
-        bf_session.host = batfish_host
-        
-        # Set network and initialize snapshot
-        logger.info(f"Setting Batfish network: {job_id}")
-        bf_set_network(job_id)
-        snapshot_name = "snapshot_latest"
+        # Override environment variable with parameter
+        os.environ["BATFISH_HOST"] = batfish_host
         
         # This is a blocking operation, run it in a thread pool
         logger.info(f"Initializing Batfish snapshot from {snapshot_dir}")
@@ -251,7 +278,7 @@ async def load_batfish_snapshot(job_id: str, batfish_host: str = "http://batfish
         try:
             await loop.run_in_executor(
                 None,
-                lambda: bf_init_snapshot(str(snapshot_dir), name=snapshot_name, overwrite=True)
+                lambda: init_batfish(job_id, str(snapshot_dir))
             )
             logger.info("Batfish snapshot initialized successfully")
         except Exception as e:
@@ -259,6 +286,8 @@ async def load_batfish_snapshot(job_id: str, batfish_host: str = "http://batfish
             logger.error(error_msg)
             logger.error(traceback.format_exc())
             raise
+        
+        snapshot_name = "snapshot_latest"
         
         # Update status to loaded
         update_status(
@@ -317,30 +346,36 @@ async def get_topology(job_id: str, batfish_host: str = "http://batfish:9997") -
         }
         
     try:
-        # Configure Batfish session
-        bf_session.host = batfish_host
+        # Override environment variable with parameter
+        os.environ["BATFISH_HOST"] = batfish_host
         
-        # Set network
-        bf_set_network(job_id)
-        
-        # Get edges
         # This is a blocking operation, run it in a thread pool
+        logger.info(f"Getting layer3 topology for job {job_id}")
         loop = asyncio.get_event_loop()
-        edges_df = await loop.run_in_executor(
-            None,
-            lambda: bfq.edges().answer().frame()
-        )
         
-        # Convert to records
-        edges = edges_df.to_dict(orient="records")
+        # Define the function to run in the thread pool
+        def get_topology_data():
+            # Initialize Batfish session
+            bf = Session(host=batfish_host)
+            bf.set_network(job_id)
+            
+            # Get edges using the Session API
+            edges_df = bf.q.edges().answer().frame()
+            
+            # Convert to records
+            return edges_df.to_dict(orient="records")
+        
+        # Execute the function in the thread pool
+        edges = await loop.run_in_executor(None, get_topology_data)
         
         return {
             "job_id": job_id,
+            "status": "success",
             "edges": edges
         }
     except Exception as e:
         error_msg = f"Failed to get topology: {str(e)}"
-        logger.error(error_msg)
+        logger.error(error_msg, exc_info=True)
         log_error(job_id, "batfish_loader", error_msg)
         
         return {

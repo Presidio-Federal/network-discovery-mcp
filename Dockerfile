@@ -19,9 +19,10 @@ ENV JAVA_HOME=/usr/lib/jvm/default-java
 # Use explicit PYTHONPATH to ensure modules can be found
 ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app
 
+# Install the latest version of pybatfish with the modern Session API
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir --upgrade pybatfish && \
-    python -c "import pybatfish; print(f'Successfully installed pybatfish {pybatfish.__version__}')"
+    python -c "import pybatfish; from pybatfish.client.session import Session; print(f'Successfully installed pybatfish {pybatfish.__version__} with client.session')"
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
