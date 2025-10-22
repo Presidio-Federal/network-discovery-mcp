@@ -1,20 +1,45 @@
+# --- Core API Framework ---
 fastapi==0.104.1
 uvicorn==0.24.0
 pydantic==2.4.2
-textfsm>=1.1.3
+
+# --- Networking / Discovery ---
 netmiko>=4.3.0
+paramiko>=3.4.0
+requests>=2.32.3
+aiohttp==3.8.6
+scapy>=2.5.0
+pysnmp>=4.4.12
 nornir==3.3.0
 nornir-netmiko>=0.2.0
-asyncio==3.4.3
-aiohttp==3.8.6
+nornir-napalm>=0.4.0
+napalm>=4.1.0
+netaddr>=0.9.0
+dnspython>=2.6.1
+
+# --- Data / Parsing ---
+PyYAML>=6.0.2
+pandas>=1.3.5
+rich>=13.9.4
+textfsm>=1.1.3
+ntc-templates>=3.5.0
+
+# --- Utility / System ---
 python-multipart==0.0.6
 python-dotenv==1.0.0
+loguru>=0.7.2
+aioping>=0.4.0
+asyncssh>=2.13.2
+async-timeout>=4.0.3
+six>=1.16.0
+
+# --- Testing ---
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-mock==3.12.0
-six>=1.16.0
-pysnmp>=4.4.12
-asyncssh>=2.13.2
+
+# --- Batfish ---
+pybatfish>=2023.11.1
+
+# --- SNMP / Network Management ---
 ncclient>=0.6.15
-requests>=2.32.3
-pybatfish
