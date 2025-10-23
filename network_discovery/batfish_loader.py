@@ -19,8 +19,7 @@ import requests
 import sys
 import traceback
 
-# Import our pybatfish patch
-from network_discovery.pybatfish_patch import apply_patches
+# No need for patches - using direct API calls
 # Configure logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -39,8 +38,7 @@ try:
     # Then try to import using the modern Session API
     from pybatfish.client.session import Session
     
-    # Apply our patches to fix URL construction
-    apply_patches()
+    # No patching needed - using direct API calls with correct port
     
     # If we get here, everything imported successfully
     BATFISH_AVAILABLE = True
@@ -175,14 +173,13 @@ def init_batfish(job_id: str, snapshot_path: str) -> Optional[Session]:
         
     try:
         # Get Batfish host from environment or use default
-        # Use just the hostname without port - pybatfish will use default ports
         host_env = os.getenv("BATFISH_HOST", "batfish")
             
-        logger.info(f"Connecting to Batfish at {host_env}")
+        logger.info(f"Connecting to Batfish at {host_env} on port 9996")
         
-        # Initialize Session with proper host format
-        # The Session constructor internally adds http:// prefix and uses default ports
-        bf = Session(host=host_env)
+        # Initialize Session with proper host format and explicitly set port to 9996
+        # The Session constructor internally adds http:// prefix
+        bf = Session(host=host_env, port=9996)
         
         # Set network and initialize snapshot
         bf.set_network(job_id)
@@ -363,11 +360,11 @@ async def get_topology(job_id: str, batfish_host: str = "batfish") -> Dict:
         # Define the function to run in the thread pool
         def get_topology_data():
             # Initialize Batfish session
-            # Use just the hostname without port - pybatfish will use default ports
             host_env = batfish_host
-            logger.info(f"Initializing Batfish session with host: {host_env}")
+            logger.info(f"Initializing Batfish session with host: {host_env} on port 9996")
             
-            bf = Session(host=host_env)
+            # Explicitly set port to 9996
+            bf = Session(host=host_env, port=9996)
             bf.set_network(job_id)
             
             # Get edges using the Session API
