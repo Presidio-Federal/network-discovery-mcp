@@ -4,15 +4,14 @@ services:
     container_name: network-discovery-mcp
     environment:
       - ARTIFACT_DIR=/artifacts
-      - BATFISH_HOST=batfish:9997
+      - BATFISH_HOST=localhost:9997
     volumes:
       - ./artifacts:/artifacts
     ports:
       - "8000:8000"
     depends_on:
       - batfish
-    networks:
-      - discovery-network
+    network_mode: "host"
 
   batfish:
     image: batfish/allinone:latest
@@ -21,9 +20,4 @@ services:
       - "9997:9997"
     volumes:
       - ./artifacts:/data
-    networks:
-      - discovery-network
-
-networks:
-  discovery-network:
-    driver: bridge
+    network_mode: "host"
