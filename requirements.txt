@@ -41,5 +41,9 @@ pytest-mock==3.12.0
 # --- Batfish ---
 pybatfish
 
+# --- Visualization ---
+networkx>=3.1
+plotly>=5.18.0
+
 # --- SNMP / Network Management ---
 ncclient>=0.6.15

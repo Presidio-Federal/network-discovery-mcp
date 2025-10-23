@@ -39,6 +39,7 @@ from network_discovery.batfish_loader import (
     get_current_snapshot,
     set_current_snapshot
 )
+from network_discovery.topology_visualizer import generate_topology_html
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -458,6 +459,21 @@ async def get_topology(job_id: str, batfish_host: Optional[str] = None):
         raise
     except Exception as e:
         logger.error(f"Error in get_topology endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/batfish/topology/html")
+async def get_topology_html(job_id: str):
+    """
+    Generate and return an interactive HTML visualization of the network topology.
+    
+    This endpoint creates a D3.js-based force-directed graph of the network topology
+    and returns it as a downloadable HTML file.
+    """
+    try:
+        html_path = generate_topology_html(job_id)
+        return FileResponse(html_path, media_type="text/html", filename="topology.html")
+    except Exception as e:
+        logger.error(f"Error in get_topology_html endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # Debug endpoints

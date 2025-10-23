@@ -415,7 +415,7 @@ curl -X POST http://localhost:8000/v1/batfish/load \
 
 4. Get network topology:
 ```bash
-# 4. Get topology
+# 4. Get topology (JSON format)
 curl -X GET http://localhost:8000/v1/batfish/topology?job_id=demo
 ```
 
@@ -429,6 +429,19 @@ Response:
   ]
 }
 ```
+
+5. Get interactive HTML topology visualization:
+```bash
+# 5. Get HTML visualization
+curl -X GET http://localhost:8000/v1/batfish/topology/html?job_id=demo -o topology.html
+```
+
+This will download an interactive HTML file that can be opened in any web browser. The visualization features:
+- Force-directed graph layout of the network topology
+- Device names as node labels
+- Interactive dragging and zooming
+- Hover tooltips with device information
+- Auto-sizing to the browser window
 
 ### Batfish Network Management
 
