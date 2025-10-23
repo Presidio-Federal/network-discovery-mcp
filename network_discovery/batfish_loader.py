@@ -171,11 +171,19 @@ def init_batfish(job_id: str, snapshot_path: str) -> Optional[Session]:
         
     try:
         # Get Batfish host from environment or use default
-        host = os.getenv("BATFISH_HOST", "http://batfish:9997")
-        logger.info(f"Connecting to Batfish at {host}")
+        # Make sure the URL format is correct (hostname:port without http:// prefix)
+        host_env = os.getenv("BATFISH_HOST", "batfish:9997")
         
-        # Initialize Session
-        bf = Session(host=host)
+        # Remove any http:// or https:// prefix if present
+        if host_env.startswith("http://"):
+            host_env = host_env[7:]
+        elif host_env.startswith("https://"):
+            host_env = host_env[8:]
+            
+        logger.info(f"Connecting to Batfish at {host_env}")
+        
+        # Initialize Session with proper host format
+        bf = Session(host=host_env)
         
         # Set network and initialize snapshot
         bf.set_network(job_id)
@@ -187,7 +195,7 @@ def init_batfish(job_id: str, snapshot_path: str) -> Optional[Session]:
         logger.error(f"Batfish initialization failed: {e}", exc_info=True)
         return None
 
-async def load_batfish_snapshot(job_id: str, batfish_host: str = "http://batfish:9997") -> Dict:
+async def load_batfish_snapshot(job_id: str, batfish_host: str = "batfish:9997") -> Dict:
     """
     Load a Batfish snapshot into a Batfish instance.
     
@@ -324,7 +332,7 @@ async def load_batfish_snapshot(job_id: str, batfish_host: str = "http://batfish
             "error": str(e)
         }
 
-async def get_topology(job_id: str, batfish_host: str = "http://batfish:9997") -> Dict:
+async def get_topology(job_id: str, batfish_host: str = "batfish:9997") -> Dict:
     """
     Get the network topology from Batfish.
     
