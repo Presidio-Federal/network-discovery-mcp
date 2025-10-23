@@ -503,6 +503,13 @@ async def get_topology(job_id: str, batfish_host: str = "batfish") -> Dict:
             # Get edges using the Session API
             edges_df = bf.q.edges().answer().frame()
             
+            # Convert Batfish Interface objects to strings to make them serializable
+            if not edges_df.empty:
+                if "Interface" in edges_df.columns:
+                    edges_df["Interface"] = edges_df["Interface"].apply(lambda x: str(x) if x is not None else None)
+                if "Remote_Interface" in edges_df.columns:
+                    edges_df["Remote_Interface"] = edges_df["Remote_Interface"].apply(lambda x: str(x) if x is not None else None)
+            
             # Convert to records
             return edges_df.to_dict(orient="records")
         
