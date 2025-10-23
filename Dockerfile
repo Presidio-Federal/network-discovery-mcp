@@ -50,6 +50,9 @@ RUN apt-get update && apt-get install -y \
     net-tools \
     iproute2 \
     default-jre \
+    gcc \
+    build-essential \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up Java environment
@@ -62,6 +65,11 @@ COPY --from=build /usr/local/bin /usr/local/bin
 # Copy application code
 COPY . .
 
+# Install pybatfish directly in the runtime container to ensure it's available
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir pandas matplotlib networkx pybatfish && \
+    python -c "import pybatfish; from pybatfish.client.session import Session; print(f'Successfully installed pybatfish {pybatfish.__version__} with client.session')"
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV ARTIFACT_DIR=/artifacts
@@ -69,6 +77,10 @@ ENV DEFAULT_PORTS=22,443
 ENV DEFAULT_CONCURRENCY=200
 ENV CONNECT_TIMEOUT=1.5
 ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app
+ENV LOG_LEVEL=info
+ENV BATFISH_HOST=batfish
+ENV HOST=0.0.0.0
+ENV TRANSPORT=http
 
 # Expose API port
 EXPOSE 8000

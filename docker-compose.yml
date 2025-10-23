@@ -4,20 +4,37 @@ services:
     container_name: network-discovery-mcp
     environment:
       - ARTIFACT_DIR=/artifacts
-      - BATFISH_HOST=localhost:9997
+      - BATFISH_HOST=batfish
     volumes:
       - ./artifacts:/artifacts
     ports:
       - "8000:8000"
     depends_on:
       - batfish
-    network_mode: "host"
+    networks:
+      - discovery-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/docs || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   batfish:
     image: batfish/allinone:latest
     container_name: batfish
     ports:
-      - "9997:9997"
+      - "9997:9997"  # Batfish service port
+      - "9996:9996"  # Coordinator service port
     volumes:
       - ./artifacts:/data
-    network_mode: "host"
+    networks:
+      - discovery-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9996/coordinator/v2/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  discovery-network:
+    driver: bridge

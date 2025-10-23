@@ -18,8 +18,9 @@ import requests
 # Import system modules needed for error reporting
 import sys
 import traceback
-import os
 
+# Import our pybatfish patch
+from network_discovery.pybatfish_patch import apply_patches
 # Configure logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -37,6 +38,9 @@ try:
     
     # Then try to import using the modern Session API
     from pybatfish.client.session import Session
+    
+    # Apply our patches to fix URL construction
+    apply_patches()
     
     # If we get here, everything imported successfully
     BATFISH_AVAILABLE = True
@@ -170,14 +174,14 @@ def init_batfish(job_id: str, snapshot_path: str) -> Optional[Session]:
         return None
         
     try:
-        # Explicitly use localhost:9997 to avoid DNS issues
-        # The Session class internally adds http:// prefix
-        host_env = "localhost:9997"
+        # Get Batfish host from environment or use default
+        # Use just the hostname without port - pybatfish will use default ports
+        host_env = os.getenv("BATFISH_HOST", "batfish")
             
         logger.info(f"Connecting to Batfish at {host_env}")
         
         # Initialize Session with proper host format
-        # The Session constructor internally adds the http:// prefix
+        # The Session constructor internally adds http:// prefix and uses default ports
         bf = Session(host=host_env)
         
         # Set network and initialize snapshot
@@ -190,7 +194,7 @@ def init_batfish(job_id: str, snapshot_path: str) -> Optional[Session]:
         logger.error(f"Batfish initialization failed: {e}", exc_info=True)
         return None
 
-async def load_batfish_snapshot(job_id: str, batfish_host: str = "localhost:9997") -> Dict:
+async def load_batfish_snapshot(job_id: str, batfish_host: str = "batfish") -> Dict:
     """
     Load a Batfish snapshot into a Batfish instance.
     
@@ -327,7 +331,7 @@ async def load_batfish_snapshot(job_id: str, batfish_host: str = "localhost:9997
             "error": str(e)
         }
 
-async def get_topology(job_id: str, batfish_host: str = "localhost:9997") -> Dict:
+async def get_topology(job_id: str, batfish_host: str = "batfish") -> Dict:
     """
     Get the network topology from Batfish.
     
@@ -359,7 +363,11 @@ async def get_topology(job_id: str, batfish_host: str = "localhost:9997") -> Dic
         # Define the function to run in the thread pool
         def get_topology_data():
             # Initialize Batfish session
-            bf = Session(host=batfish_host)
+            # Use just the hostname without port - pybatfish will use default ports
+            host_env = batfish_host
+            logger.info(f"Initializing Batfish session with host: {host_env}")
+            
+            bf = Session(host=host_env)
             bf.set_network(job_id)
             
             # Get edges using the Session API
