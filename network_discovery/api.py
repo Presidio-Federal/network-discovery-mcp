@@ -32,7 +32,13 @@ from network_discovery.workers import (
     get_batfish_topology,
 )
 from network_discovery.config_collector import get_device_state, get_collection_status
-from network_discovery.batfish_loader import BATFISH_AVAILABLE
+from network_discovery.batfish_loader import (
+    BATFISH_AVAILABLE,
+    list_networks,
+    list_snapshots,
+    get_current_snapshot,
+    set_current_snapshot
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -493,13 +499,13 @@ async def debug_batfish_status():
         pybatfish_installed = pybatfish_spec is not None
         
         # Check if we can import the required modules
-        commands_available = False
+        session_available = False
         question_available = False
         
         if pybatfish_installed:
             try:
-                from pybatfish.client.commands import bf_init_snapshot, bf_set_network, bf_session
-                commands_available = True
+                from pybatfish.client.session import Session
+                session_available = True
             except ImportError:
                 pass
                 
@@ -515,7 +521,7 @@ async def debug_batfish_status():
         return {
             "batfish_available": BATFISH_AVAILABLE,
             "pybatfish_installed": pybatfish_installed,
-            "commands_available": commands_available,
+            "session_available": session_available,
             "question_available": question_available,
             "python_path": python_path
         }
@@ -525,3 +531,98 @@ async def debug_batfish_status():
             "batfish_available": False,
             "error": str(e)
         }
+
+# Batfish Network Management Endpoints
+@app.get("/v1/batfish/networks", response_model=List[str])
+async def get_networks(batfish_host: str = "batfish"):
+    """
+    List all networks in Batfish.
+    
+    This endpoint returns a list of all networks in Batfish.
+    """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+        
+    try:
+        networks = list_networks(batfish_host)
+        return networks
+    except Exception as e:
+        logger.error(f"Error in get_networks endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/batfish/networks/{network_name}", response_model=Dict)
+async def set_network(network_name: str, batfish_host: str = "batfish"):
+    """
+    Set the current network in Batfish.
+    
+    This endpoint sets the current network in Batfish.
+    """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+        
+    try:
+        # We don't have a direct set_network function, but we can use list_snapshots
+        # which will set the network and return the snapshots
+        snapshots = list_snapshots(network_name, batfish_host)
+        return {
+            "network": network_name,
+            "snapshots": snapshots
+        }
+    except Exception as e:
+        logger.error(f"Error in set_network endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/batfish/networks/{network_name}/snapshots", response_model=List[str])
+async def get_snapshots(network_name: str, batfish_host: str = "batfish"):
+    """
+    List all snapshots in a network.
+    
+    This endpoint returns a list of all snapshots in a network.
+    """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+        
+    try:
+        snapshots = list_snapshots(network_name, batfish_host)
+        return snapshots
+    except Exception as e:
+        logger.error(f"Error in get_snapshots endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/batfish/networks/{network_name}/snapshot", response_model=Dict)
+async def get_snapshot(network_name: str, batfish_host: str = "batfish"):
+    """
+    Get the current snapshot for a network.
+    
+    This endpoint returns the current snapshot for a network.
+    """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+        
+    try:
+        snapshot = get_current_snapshot(network_name, batfish_host)
+        if snapshot is None:
+            return {"network": network_name, "snapshot": None, "status": "no_snapshot_set"}
+        return {"network": network_name, "snapshot": snapshot, "status": "success"}
+    except Exception as e:
+        logger.error(f"Error in get_snapshot endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/batfish/networks/{network_name}/snapshot/{snapshot_name}", response_model=Dict)
+async def set_snapshot(network_name: str, snapshot_name: str, batfish_host: str = "batfish"):
+    """
+    Set the current snapshot for a network.
+    
+    This endpoint sets the current snapshot for a network.
+    """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+        
+    try:
+        success = set_current_snapshot(network_name, snapshot_name, batfish_host)
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to set snapshot {snapshot_name} for network {network_name}")
+        return {"network": network_name, "snapshot": snapshot_name, "status": "success"}
+    except Exception as e:
+        logger.error(f"Error in set_snapshot endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -89,6 +89,11 @@ All writes are atomic (`.tmp` → rename).
 | POST | `/v1/batfish/build` | Convert state JSON → .cfg snapshot |
 | POST | `/v1/batfish/load` | Load snapshot into Batfish |
 | GET | `/v1/batfish/topology` | Return Layer-3 adjacency graph |
+| GET | `/v1/batfish/networks` | List all networks in Batfish |
+| POST | `/v1/batfish/networks/{network_name}` | Set current network in Batfish |
+| GET | `/v1/batfish/networks/{network_name}/snapshots` | List all snapshots in a network |
+| GET | `/v1/batfish/networks/{network_name}/snapshot` | Get current snapshot for a network |
+| POST | `/v1/batfish/networks/{network_name}/snapshot/{snapshot_name}` | Set current snapshot for a network |
 
 ## Usage Examples
 
@@ -422,5 +427,75 @@ Response:
     {"Interface": "Gig0/0@HAI-HQ", "Remote_Interface": "Gig0/1@HAI-BRANCH-1"},
     {"Interface": "Gig0/1@HAI-HQ", "Remote_Interface": "Gig0/0@HAI-BRANCH-2"}
   ]
+}
+```
+
+### Batfish Network Management
+
+The network-discovery-mcp service provides additional endpoints for managing Batfish networks and snapshots:
+
+#### List all networks
+
+```bash
+curl -X GET http://localhost:8000/v1/batfish/networks
+```
+
+Response:
+```json
+["demo", "network1", "network2"]
+```
+
+#### Set current network
+
+```bash
+curl -X POST http://localhost:8000/v1/batfish/networks/demo
+```
+
+Response:
+```json
+{
+  "network": "demo",
+  "snapshots": ["snapshot_latest"]
+}
+```
+
+#### List snapshots in a network
+
+```bash
+curl -X GET http://localhost:8000/v1/batfish/networks/demo/snapshots
+```
+
+Response:
+```json
+["snapshot_latest", "snapshot_2025_10_22"]
+```
+
+#### Get current snapshot
+
+```bash
+curl -X GET http://localhost:8000/v1/batfish/networks/demo/snapshot
+```
+
+Response:
+```json
+{
+  "network": "demo",
+  "snapshot": "snapshot_latest",
+  "status": "success"
+}
+```
+
+#### Set current snapshot
+
+```bash
+curl -X POST http://localhost:8000/v1/batfish/networks/demo/snapshot/snapshot_2025_10_22
+```
+
+Response:
+```json
+{
+  "network": "demo",
+  "snapshot": "snapshot_2025_10_22",
+  "status": "success"
 }
 ```

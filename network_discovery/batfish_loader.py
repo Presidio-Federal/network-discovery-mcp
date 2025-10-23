@@ -328,6 +328,134 @@ async def load_batfish_snapshot(job_id: str, batfish_host: str = "batfish") -> D
             "error": str(e)
         }
 
+def list_networks(batfish_host: str = "batfish") -> List[str]:
+    """
+    List all networks in Batfish.
+    
+    Args:
+        batfish_host: Batfish host
+        
+    Returns:
+        List[str]: List of network names
+    """
+    if not BATFISH_AVAILABLE:
+        logger.error("pybatfish module not available. Cannot list networks.")
+        return []
+        
+    try:
+        # Initialize Batfish session
+        logger.info(f"Connecting to Batfish at {batfish_host} on port 9996")
+        bf = Session(host=batfish_host, port=9996)
+        
+        # List networks
+        networks = bf.list_networks()
+        logger.info(f"Found {len(networks)} networks: {networks}")
+        
+        return networks
+    except Exception as e:
+        logger.error(f"Failed to list networks: {str(e)}", exc_info=True)
+        return []
+
+def list_snapshots(network_name: str, batfish_host: str = "batfish") -> List[str]:
+    """
+    List all snapshots in a network.
+    
+    Args:
+        network_name: Network name
+        batfish_host: Batfish host
+        
+    Returns:
+        List[str]: List of snapshot names
+    """
+    if not BATFISH_AVAILABLE:
+        logger.error("pybatfish module not available. Cannot list snapshots.")
+        return []
+        
+    try:
+        # Initialize Batfish session
+        logger.info(f"Connecting to Batfish at {batfish_host} on port 9996")
+        bf = Session(host=batfish_host, port=9996)
+        
+        # Set network
+        bf.set_network(network_name)
+        
+        # List snapshots
+        snapshots = bf.list_snapshots()
+        logger.info(f"Found {len(snapshots)} snapshots for network {network_name}: {snapshots}")
+        
+        return snapshots
+    except Exception as e:
+        logger.error(f"Failed to list snapshots: {str(e)}", exc_info=True)
+        return []
+
+def get_current_snapshot(network_name: str, batfish_host: str = "batfish") -> Optional[str]:
+    """
+    Get the current snapshot for a network.
+    
+    Args:
+        network_name: Network name
+        batfish_host: Batfish host
+        
+    Returns:
+        Optional[str]: Current snapshot name or None if not set
+    """
+    if not BATFISH_AVAILABLE:
+        logger.error("pybatfish module not available. Cannot get current snapshot.")
+        return None
+        
+    try:
+        # Initialize Batfish session
+        logger.info(f"Connecting to Batfish at {batfish_host} on port 9996")
+        bf = Session(host=batfish_host, port=9996)
+        
+        # Set network
+        bf.set_network(network_name)
+        
+        # Get current snapshot
+        try:
+            snapshot = bf.get_snapshot()
+            logger.info(f"Current snapshot for network {network_name}: {snapshot}")
+            return snapshot
+        except ValueError:
+            logger.info(f"No current snapshot set for network {network_name}")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to get current snapshot: {str(e)}", exc_info=True)
+        return None
+
+def set_current_snapshot(network_name: str, snapshot_name: str, batfish_host: str = "batfish") -> bool:
+    """
+    Set the current snapshot for a network.
+    
+    Args:
+        network_name: Network name
+        snapshot_name: Snapshot name
+        batfish_host: Batfish host
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not BATFISH_AVAILABLE:
+        logger.error("pybatfish module not available. Cannot set current snapshot.")
+        return False
+        
+    try:
+        # Initialize Batfish session
+        logger.info(f"Connecting to Batfish at {batfish_host} on port 9996")
+        bf = Session(host=batfish_host, port=9996)
+        
+        # Set network
+        bf.set_network(network_name)
+        
+        # Set current snapshot
+        bf.set_snapshot(snapshot_name)
+        logger.info(f"Set current snapshot for network {network_name} to {snapshot_name}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to set current snapshot: {str(e)}", exc_info=True)
+        return False
+
 async def get_topology(job_id: str, batfish_host: str = "batfish") -> Dict:
     """
     Get the network topology from Batfish.
@@ -366,6 +494,11 @@ async def get_topology(job_id: str, batfish_host: str = "batfish") -> Dict:
             # Explicitly set port to 9996
             bf = Session(host=host_env, port=9996)
             bf.set_network(job_id)
+            
+            # Set the snapshot name - this is required before querying
+            snapshot_name = "snapshot_latest"
+            logger.info(f"Setting snapshot to: {snapshot_name}")
+            bf.set_snapshot(snapshot_name)
             
             # Get edges using the Session API
             edges_df = bf.q.edges().answer().frame()
