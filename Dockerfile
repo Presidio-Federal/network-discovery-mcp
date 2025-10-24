@@ -26,7 +26,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install dependencies first, then FastMCP with its required dependencies
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir pydantic-settings>=2.0.0 && \
+    pip install --no-cache-dir fastmcp>=2.12.0 httpx>=0.25.0
 
 # --- runtime stage ---
 FROM python:3.11-slim
@@ -65,9 +68,11 @@ COPY --from=build /usr/local/bin /usr/local/bin
 # Copy application code
 COPY . .
 
-# Install pybatfish directly in the runtime container to ensure it's available
+# Install pybatfish and other dependencies first, then FastMCP with its required dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir pandas matplotlib networkx pybatfish && \
+    pip install --no-cache-dir pydantic-settings>=2.0.0 && \
+    pip install --no-cache-dir fastmcp>=2.12.0 httpx>=0.25.0 && \
     python -c "import pybatfish; from pybatfish.client.session import Session; print(f'Successfully installed pybatfish {pybatfish.__version__} with client.session')"
 
 # Set environment variables
@@ -80,10 +85,12 @@ ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app
 ENV LOG_LEVEL=info
 ENV BATFISH_HOST=batfish
 ENV HOST=0.0.0.0
+ENV PORT=4437
 ENV TRANSPORT=http
+ENV ENABLE_MCP=false
 
-# Expose API port
-EXPOSE 8000
+# Expose API and MCP ports
+EXPOSE 4437
 
 # Run the application
-CMD ["uvicorn", "network_discovery.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "network_discovery"]

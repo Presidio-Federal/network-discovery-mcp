@@ -1,0 +1,43 @@
+services:
+  network-discovery:
+    image: ghcr.io/presidio-federal/network-discovery-mcp:latest
+    container_name: network-discovery-mcp
+    environment:
+      - ARTIFACT_DIR=/artifacts
+      - BATFISH_HOST=batfish
+      - ENABLE_MCP=true
+      - TRANSPORT=http
+      - PORT=4437
+    volumes:
+      - ./artifacts:/artifacts
+    ports:
+      - "4437:4437"  # MCP port
+    depends_on:
+      - batfish
+    networks:
+      - discovery-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4437/mcp || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  batfish:
+    image: batfish/allinone:latest
+    container_name: batfish
+    ports:
+      - "9997:9997"  # Batfish service port
+      - "9996:9996"  # Coordinator service port
+    volumes:
+      - ./artifacts:/data
+    networks:
+      - discovery-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9996/coordinator/v2/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  discovery-network:
+    driver: bridge
