@@ -2,9 +2,7 @@ name: Build and Push Container
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches: [ main ]  # Only run when changes are pushed to main (i.e., after a PR is merged)
   workflow_dispatch:  # Allows manual triggering
 
 env:
@@ -51,7 +49,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.ref == 'refs/heads/main' }}  # Only push if we're on main branch
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

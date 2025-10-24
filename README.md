@@ -4,7 +4,7 @@ A modular, containerized network discovery service for the HAI platform.
 
 ## Overview
 
-This service provides lightweight, API-driven network discovery capabilities through six main modules:
+This service provides lightweight, API-driven network discovery capabilities with Model Context Protocol (MCP) integration for AI agents. It consists of six main modules:
 
 1. **SEEDER**: Starts from a known device (seed) and collects potential subnets and candidate IPs via interfaces, VRFs, ARP, CDP/LLDP, and routing tables.
 2. **IP-SCANNER**: Probes for open management ports (default: 22 and 443) across candidate IPs or subnets.
@@ -13,7 +13,11 @@ This service provides lightweight, API-driven network discovery capabilities thr
 5. **BATFISH-LOADER**: Builds and loads Batfish snapshots for network analysis and topology extraction.
 6. **TOPOLOGY-VISUALIZER**: Generates interactive HTML visualizations of network topologies using Batfish data.
 
-The service produces well-structured artifacts for downstream tools (NSO, Batfish, etc.) in a job-scoped workspace.
+The service can run in two modes:
+- **REST API Mode**: Traditional HTTP API endpoints for direct integration
+- **MCP Mode**: Model Context Protocol server for seamless AI agent integration
+
+All functionality is available through both interfaces, producing well-structured artifacts for downstream tools (NSO, Batfish, etc.) in a job-scoped workspace.
 
 ## Architecture
 
@@ -21,7 +25,9 @@ The service produces well-structured artifacts for downstream tools (NSO, Batfis
 network-discovery-mcp/
   ├── network_discovery/
   │   ├── __init__.py
+  │   ├── __main__.py         # main entry point (supports both API and MCP modes)
   │   ├── api.py              # FastAPI endpoints
+  │   ├── mcp_server.py       # MCP server implementation
   │   ├── artifacts.py        # atomic write/read helpers
   │   ├── seeder.py           # collects from seed device → produces targets + device state
   │   ├── scanner.py          # probes ports for reachability (22, 443, etc.)
@@ -38,7 +44,9 @@ network-discovery-mcp/
   │   ├── test_fingerprinter.py
   │   ├── test_config_collector.py
   │   └── fixtures/
-  ├── Dockerfile
+  ├── Dockerfile              # multi-stage build with MCP support
+  ├── docker-compose.yml      # REST API mode configuration
+  ├── docker-compose.mcp.yml  # MCP mode configuration
   ├── requirements.txt
   └── .github/workflows/build-and-publish.yml
 ```
@@ -239,30 +247,80 @@ Response:
 
 ## Docker Deployment
 
-### Single Container
+### REST API Mode (Default)
+
+Run the container in REST API mode:
 
 ```bash
 docker pull ghcr.io/username/network-discovery-mcp:latest
 docker run -p 8000:8000 -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
 ```
 
+Access the API documentation at: http://localhost:8000/docs
+
+### MCP Mode
+
+Run the container in MCP mode:
+
+```bash
+docker pull ghcr.io/username/network-discovery-mcp:latest
+docker run -p 8000:8000 -e ENABLE_MCP=true -e TRANSPORT=http -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
+```
+
+Access the MCP server at: http://localhost:8000/mcp
+
+#### Port Forwarding Scenario
+
+If you need to run behind a reverse proxy or port forwarding, use the BASE_PATH environment variable:
+
+```bash
+# Example: Using a base path with external port forwarding
+docker run -p 8000:8000 -e ENABLE_MCP=true -e TRANSPORT=http -e BASE_PATH="/api" -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
+```
+
+Access the MCP server at: http://your-server:8000/api/mcp
+
 ### Docker Compose with Batfish
 
-For the full pipeline with Batfish integration:
+#### REST API Mode
+
+For the full pipeline with Batfish integration in REST API mode:
 
 ```bash
 docker compose up --build
+```
+
+#### MCP Mode
+
+For the full pipeline with Batfish integration in MCP mode:
+
+```bash
+docker compose -f docker-compose.mcp.yml up --build
 ```
 
 This will start both the network-discovery-mcp service and the Batfish container with a shared volume for artifact exchange.
 
 ## Environment Variables
 
+### Core Settings
 - `ARTIFACT_DIR`: Directory for storing job artifacts (default: `/tmp/network_discovery_artifacts`)
 - `DEFAULT_PORTS`: Default ports to scan (default: `22,443`)
 - `DEFAULT_CONCURRENCY`: Default concurrency level for scanning (default: `200`)
 - `CONNECT_TIMEOUT`: Connection timeout in seconds (default: `1.5`)
-- `BATFISH_HOST`: URL of the Batfish server (default: `http://batfish:9997`)
+- `LOG_LEVEL`: Logging level (default: `info`)
+
+### Batfish Settings
+- `BATFISH_HOST`: Hostname of the Batfish server (default: `batfish`)
+- `BATFISH_PORT`: Port of the Batfish server (default: `9996`)
+
+### Server Settings
+- `HOST`: Host to bind the server to (default: `0.0.0.0`)
+- `PORT`: Port to listen on (default: `8000`)
+
+### MCP Settings
+- `ENABLE_MCP`: Enable MCP mode (default: `false`)
+- `TRANSPORT`: MCP transport type (default: `http`)
+- `BASE_PATH`: Base path for the MCP endpoint (default: `""`) - useful for port forwarding scenarios
 
 ## Fingerprinter Module
 
@@ -581,31 +639,63 @@ Response:
 }
 ```
 
-## Running Modes
+## Model Context Protocol (MCP) Integration
 
-The network-discovery-mcp service can run in two modes:
+The network-discovery-mcp service provides a comprehensive MCP interface for seamless integration with AI agents. All network discovery capabilities are exposed as MCP tools that can be used by any MCP-compatible client.
 
-### 1. REST API Mode (Default)
+### Running in MCP Mode
 
-In this mode, the service exposes a REST API using FastAPI:
+The service can be configured to run in MCP mode using environment variables:
 
 ```bash
-# Run with default REST API mode
-docker-compose up -d
+# Run the container in MCP mode with HTTP transport
+docker run -p 4437:4437 -e ENABLE_MCP=true -e TRANSPORT=http network-discovery-mcp
 ```
 
-Access the API documentation at: http://localhost:4437/docs
-
-### 2. MCP (Model Context Protocol) Mode
-
-In this mode, the service exposes an MCP interface for integration with AI agents:
+Or using Docker Compose:
 
 ```bash
 # Run in MCP mode
 docker-compose -f docker-compose.mcp.yml up -d
 ```
 
-The MCP server will be available at: http://localhost:4437/mcp
+### MCP Tools
+
+The MCP server exposes the following tool categories:
+
+#### Seeder Tools
+- `seed_device`: Start network discovery from a seed device
+- `get_targets`: Retrieve targets collected from the seed device
+
+#### Scanner Tools
+- `scan_targets`: Scan targets for open management ports
+- `scan_from_subnets`: Scan specific subnets for open management ports
+- `add_subnets`: Add subnets to an existing scan job
+- `get_scan_results`: Get scan results for a job
+- `get_reachable_hosts`: Get only reachable hosts from scan results
+
+#### Fingerprinter Tools
+- `fingerprint_devices`: Start fingerprinting discovered devices
+- `get_fingerprint_results`: Get fingerprinting results for a job
+
+#### Config Collector Tools
+- `collect_device_configs`: Collect device configurations
+- `get_device_config`: Get configuration for a specific device
+- `update_device_config`: Update configuration for a specific device
+- `get_collection_status`: Get status of configuration collection
+
+#### Batfish Tools
+- `build_batfish_snapshot`: Build a Batfish snapshot
+- `load_batfish_snapshot`: Load a Batfish snapshot
+- `get_topology`: Get network topology in JSON format
+- `generate_topology_visualization`: Generate interactive HTML visualization of network topology
+- `list_batfish_networks`: List all Batfish networks
+- `set_batfish_network`: Set current Batfish network
+- `list_batfish_snapshots`: List snapshots in a network
+- `get_current_snapshot`: Get current snapshot
+- `set_current_snapshot`: Set current snapshot
+
+### Testing with FastMCP Inspector
 
 You can test the MCP server using the FastMCP Inspector:
 
@@ -617,6 +707,97 @@ npm install -g @presidio-federal/fastmcp-inspector
 fastmcp-inspector http://localhost:4437/mcp
 ```
 
+The FastMCP Inspector provides a web-based interface for exploring and testing all available MCP tools.
+
+### Example MCP Workflow
+
+Here's how an AI agent would interact with the MCP server to discover and analyze a network:
+
+1. **Seed from a device**:
+   ```python
+   result = mcp.invoke("seed_device", {
+       "seed_host": "192.168.1.1",
+       "credentials": {
+           "username": "admin",
+           "password": "cisco"
+       },
+       "methods": ["interfaces", "routing", "arp", "cdp"]
+   })
+   job_id = result["job_id"]
+   ```
+
+2. **Scan discovered targets**:
+   ```python
+   result = mcp.invoke("scan_targets", {
+       "job_id": job_id,
+       "ports": [22, 443, 830],
+       "concurrency": 200
+   })
+   ```
+
+3. **Fingerprint discovered devices**:
+   ```python
+   result = mcp.invoke("fingerprint_devices", {
+       "job_id": job_id,
+       "snmp_community": "public",
+       "concurrency": 100
+   })
+   ```
+
+4. **Collect device configurations**:
+   ```python
+   result = mcp.invoke("collect_device_configs", {
+       "job_id": job_id,
+       "credentials": {
+           "username": "admin",
+           "password": "cisco"
+       },
+       "concurrency": 25
+   })
+   ```
+
+5. **Build and load Batfish snapshot**:
+   ```python
+   mcp.invoke("build_batfish_snapshot", {"job_id": job_id})
+   mcp.invoke("load_batfish_snapshot", {"job_id": job_id})
+   ```
+
+6. **Generate topology visualization**:
+   ```python
+   result = mcp.invoke("generate_topology_visualization", {"job_id": job_id})
+   topology_path = result["path"]
+   ```
+
+### MCP Configuration
+
+The MCP server can be configured using the following environment variables:
+
+- `ENABLE_MCP`: Set to `true` to enable MCP mode (default: `false`)
+- `TRANSPORT`: MCP transport type, set to `http` for HTTP transport (default: `http`)
+- `HOST`: Host to bind the server to (default: `0.0.0.0`)
+- `PORT`: Port to listen on (default: `8000`)
+- `BASE_PATH`: Base path for the MCP endpoint (default: `""`)
+
+For production deployments, the HTTP transport is recommended for integration with AI agents.
+
+#### Port Forwarding Configuration
+
+If you're running the service behind a reverse proxy or need to forward ports, use the `BASE_PATH` environment variable to ensure the MCP endpoint is correctly exposed:
+
+```bash
+# Example: Running with a base path for external port forwarding
+export BASE_PATH="/api"
+docker run -p 8000:8000 -e ENABLE_MCP=true -e BASE_PATH="$BASE_PATH" network-discovery-mcp
+```
+
+The MCP endpoint will be available at: `http://your-server:8000/api/mcp`
+
+When using with FastMCP Inspector:
+
+```bash
+fastmcp-inspector http://your-server:8000/api/mcp
+```
+
 ## Dependencies
 
 The network-discovery-mcp service relies on the following key dependencies:
@@ -624,7 +805,7 @@ The network-discovery-mcp service relies on the following key dependencies:
 ### Core Framework
 - FastAPI and Uvicorn for the API server
 - Pydantic for data validation and settings management
-- FastMCP for Model Context Protocol support
+- FastMCP for Model Context Protocol support (v2.12.0+)
 
 ### Network Discovery
 - Netmiko and Paramiko for SSH connectivity
