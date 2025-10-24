@@ -4,13 +4,14 @@ A modular, containerized network discovery service for the HAI platform.
 
 ## Overview
 
-This service provides lightweight, API-driven network discovery capabilities through five main modules:
+This service provides lightweight, API-driven network discovery capabilities through six main modules:
 
 1. **SEEDER**: Starts from a known device (seed) and collects potential subnets and candidate IPs via interfaces, VRFs, ARP, CDP/LLDP, and routing tables.
 2. **IP-SCANNER**: Probes for open management ports (default: 22 and 443) across candidate IPs or subnets.
 3. **FINGERPRINTER**: Analyzes hosts discovered by the scanner and infers likely vendor, model, and management protocol without logging in.
 4. **CONFIG-COLLECTOR**: Retrieves each device's running configuration in parallel and stores it as a separate JSON file.
 5. **BATFISH-LOADER**: Builds and loads Batfish snapshots for network analysis and topology extraction.
+6. **TOPOLOGY-VISUALIZER**: Generates interactive HTML visualizations of network topologies using Batfish data.
 
 The service produces well-structured artifacts for downstream tools (NSO, Batfish, etc.) in a job-scoped workspace.
 
@@ -27,6 +28,7 @@ network-discovery-mcp/
   │   ├── fingerprinter.py    # infers device vendor/model from scan results
   │   ├── config_collector.py # retrieves device configurations in parallel
   │   ├── batfish_loader.py   # builds and loads Batfish snapshots
+  │   ├── topology_visualizer.py # generates interactive HTML visualizations
   │   ├── config.py
   │   ├── workers.py          # async task orchestration
   ├── tests/
@@ -62,6 +64,7 @@ Each run creates a job directory:
   │       ├── HAI-HQ.cfg
   │       ├── HAI-BRANCH-1.cfg
   │       └── ...
+  ├── topology.html            # <-- Interactive network visualization
   ├── status.json              # module status
   ├── summary.log
   └── error.json
@@ -88,7 +91,8 @@ All writes are atomic (`.tmp` → rename).
 | POST | `/v1/state/update/{hostname}` | Re-collect one device's state |
 | POST | `/v1/batfish/build` | Convert state JSON → .cfg snapshot |
 | POST | `/v1/batfish/load` | Load snapshot into Batfish |
-| GET | `/v1/batfish/topology` | Return Layer-3 adjacency graph |
+| GET | `/v1/batfish/topology` | Return Layer-3 adjacency graph in JSON format |
+| GET | `/v1/batfish/topology/html` | Generate and return interactive HTML visualization of network topology |
 | GET | `/v1/batfish/networks` | List all networks in Batfish |
 | POST | `/v1/batfish/networks/{network_name}` | Set current network in Batfish |
 | GET | `/v1/batfish/networks/{network_name}/snapshots` | List all snapshots in a network |
@@ -436,16 +440,80 @@ Response:
 curl -X GET http://localhost:8000/v1/batfish/topology/html?job_id=demo -o topology.html
 ```
 
-This will download an interactive HTML file that can be opened in any web browser. The visualization features:
-- Force-directed graph layout of the network topology
-- Device names as node labels
-- Interactive dragging and zooming
-- Hover tooltips with device information
-- Auto-sizing to the browser window
+This will download an interactive HTML file that can be opened in any web browser. The visualization is generated using Plotly and NetworkX, providing a rich interactive experience.
+
+#### Visualization Features
+
+- **Force-directed graph layout**: Automatically arranges nodes based on their connections
+- **Device names as node labels**: Clearly identifies each network device
+- **Interactive controls**:
+  - Drag nodes to rearrange the layout
+  - Zoom in/out with mouse wheel or pinch gesture
+  - Pan the view by clicking and dragging the background
+  - Hover over nodes to see detailed device information
+- **Auto-sizing**: Adapts to the browser window size
+- **Self-contained**: HTML file includes all necessary visualization code
+
+#### How It Works
+
+1. The endpoint connects to Batfish using the Session API
+2. It retrieves the network topology data from `bf.q.edges().answer().frame()`
+3. Device names are extracted from interface identifiers (e.g., "Gig0/0@ROUTER-1" becomes "ROUTER-1")
+4. A NetworkX graph is constructed from the node relationships
+5. Plotly generates an interactive visualization of the graph
+6. The HTML is saved to `/artifacts/{job_id}/topology.html` and returned as a download
+
+#### Example Usage Workflow
+
+```bash
+# 1. Collect device configurations
+curl -X POST http://localhost:8000/v1/state/collect -H "Content-Type: application/json" \
+  -d '{"job_id": "demo", "credentials": {"username": "admin", "password": "cisco"}}'
+
+# 2. Build and load Batfish snapshot
+curl -X POST http://localhost:8000/v1/batfish/build -H "Content-Type: application/json" \
+  -d '{"job_id": "demo"}'
+curl -X POST http://localhost:8000/v1/batfish/load -H "Content-Type: application/json" \
+  -d '{"job_id": "demo"}'
+
+# 3. Generate and download the topology visualization
+curl -X GET http://localhost:8000/v1/batfish/topology/html?job_id=demo -o network_topology.html
+
+# 4. Open the HTML file in any web browser
+open network_topology.html
+```
+
+## API Endpoints Reference
+
+The network-discovery-mcp service provides the following API endpoints:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/v1/seed` | Start a seeder operation from a device |
+| POST | `/v1/scan` | Start a scanner operation using existing job targets |
+| POST | `/v1/scan/from-subnets` | Start a scanner operation using subnets |
+| POST | `/v1/scan/add-subnets` | Add subnets to an existing scan job |
+| GET | `/v1/scan/{job_id}` | Get scan results for a job |
+| GET | `/v1/scan/{job_id}/reachable` | Get only reachable hosts from scan results |
+| POST | `/v1/fingerprint` | Start a fingerprinting operation |
+| GET | `/v1/fingerprint/{job_id}` | Get fingerprinting results for a job |
+| POST | `/v1/state/collect` | Collect device configurations |
+| GET | `/v1/state/{hostname}` | Get configuration for a specific device |
+| POST | `/v1/state/update/{hostname}` | Update configuration for a specific device |
+| GET | `/v1/state/status` | Get status of configuration collection |
+| POST | `/v1/batfish/build` | Build a Batfish snapshot |
+| POST | `/v1/batfish/load` | Load a Batfish snapshot |
+| GET | `/v1/batfish/topology` | Get network topology in JSON format |
+| GET | `/v1/batfish/topology/html` | Get interactive HTML visualization of network topology |
+| GET | `/v1/batfish/networks` | List all Batfish networks |
+| POST | `/v1/batfish/networks/{network_name}` | Set current Batfish network |
+| GET | `/v1/batfish/networks/{network_name}/snapshots` | List snapshots in a network |
+| GET | `/v1/batfish/networks/{network_name}/snapshot` | Get current snapshot |
+| POST | `/v1/batfish/networks/{network_name}/snapshot/{snapshot_name}` | Set current snapshot |
 
 ### Batfish Network Management
 
-The network-discovery-mcp service provides additional endpoints for managing Batfish networks and snapshots:
+The network-discovery-mcp service provides the following endpoints for managing Batfish networks and snapshots:
 
 #### List all networks
 
@@ -512,3 +580,31 @@ Response:
   "status": "success"
 }
 ```
+
+## Dependencies
+
+The network-discovery-mcp service relies on the following key dependencies:
+
+### Core Framework
+- FastAPI and Uvicorn for the API server
+- Pydantic for data validation and settings management
+
+### Network Discovery
+- Netmiko and Paramiko for SSH connectivity
+- Nornir for parallel task execution
+- NAPALM for multi-vendor network automation
+- Scapy and PySnmp for network probing and SNMP operations
+
+### Data Processing
+- Pandas for data manipulation
+- NetworkX for graph operations and topology analysis
+- Plotly for interactive visualizations
+
+### Batfish Integration
+- Pybatfish for network analysis and validation
+
+### Deployment
+- Docker and Docker Compose for containerization
+- GitHub Actions for CI/CD
+
+For a complete list of dependencies and version requirements, see the `requirements.txt` file.
