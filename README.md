@@ -581,6 +581,42 @@ Response:
 }
 ```
 
+## Running Modes
+
+The network-discovery-mcp service can run in two modes:
+
+### 1. REST API Mode (Default)
+
+In this mode, the service exposes a REST API using FastAPI:
+
+```bash
+# Run with default REST API mode
+docker-compose up -d
+```
+
+Access the API documentation at: http://localhost:4437/docs
+
+### 2. MCP (Model Context Protocol) Mode
+
+In this mode, the service exposes an MCP interface for integration with AI agents:
+
+```bash
+# Run in MCP mode
+docker-compose -f docker-compose.mcp.yml up -d
+```
+
+The MCP server will be available at: http://localhost:4437/mcp
+
+You can test the MCP server using the FastMCP Inspector:
+
+```bash
+# Install FastMCP Inspector
+npm install -g @presidio-federal/fastmcp-inspector
+
+# Connect to the MCP server
+fastmcp-inspector http://localhost:4437/mcp
+```
+
 ## Dependencies
 
 The network-discovery-mcp service relies on the following key dependencies:
@@ -588,6 +624,7 @@ The network-discovery-mcp service relies on the following key dependencies:
 ### Core Framework
 - FastAPI and Uvicorn for the API server
 - Pydantic for data validation and settings management
+- FastMCP for Model Context Protocol support
 
 ### Network Discovery
 - Netmiko and Paramiko for SSH connectivity
