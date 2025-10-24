@@ -22,13 +22,14 @@ def main():
     # Get configuration from environment
     enable_mcp = os.getenv("ENABLE_MCP", "false").lower() in ("true", "1", "yes")
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "4437"))
+    port = int(os.getenv("PORT", "8000"))
     transport = os.getenv("TRANSPORT", "http").lower()
+    base_path = os.getenv("BASE_PATH", "")
     
     if enable_mcp:
         logger.info("Starting Network Discovery Service in MCP mode")
         from network_discovery.mcp_server import main as mcp_main
-        mcp_main()
+        mcp_main(base_path=base_path)
     else:
         logger.info("Starting Network Discovery Service in FastAPI mode")
         from network_discovery.api import app

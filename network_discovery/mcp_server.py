@@ -605,14 +605,23 @@ def create_server() -> FastMCP:
 mcp = create_server()
 
 
-def main():
-    """Main entry point for the MCP server."""
+def main(base_path: str = ""):
+    """Main entry point for the MCP server.
+    
+    Args:
+        base_path: Optional base path for the MCP endpoint (e.g., "/api")
+    """
     # Get configuration from environment
     transport = os.getenv("TRANSPORT", "http").lower()
-    port = int(os.getenv("PORT", "4437"))
+    port = int(os.getenv("PORT", "8000"))
     host = os.getenv("HOST", "0.0.0.0")
     
+    # Construct MCP path with base path if provided
+    mcp_path = f"{base_path}/mcp" if base_path else "/mcp"
+    mcp_path = mcp_path.replace("//", "/")  # Handle case where base_path ends with slash
+    
     logger.info(f"Starting Network Discovery MCP Server with transport: {transport}")
+    logger.info(f"MCP endpoint will be available at: {host}:{port}{mcp_path}")
     
     try:
         if transport == "stdio":
@@ -623,7 +632,7 @@ def main():
             mcp.run(transport="sse", host=host, port=port)
         else:
             # HTTP Stream transport (default, recommended)
-            mcp.run(transport="http", host=host, port=port, path="/mcp")
+            mcp.run(transport="http", host=host, port=port, path=mcp_path)
             
     except KeyboardInterrupt:
         logger.info("Server stopped by user")

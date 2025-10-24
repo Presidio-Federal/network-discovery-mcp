@@ -85,12 +85,12 @@ ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app
 ENV LOG_LEVEL=info
 ENV BATFISH_HOST=batfish
 ENV HOST=0.0.0.0
-ENV PORT=4437
+ENV PORT=8000
 ENV TRANSPORT=http
 ENV ENABLE_MCP=false
 
 # Expose API and MCP ports
-EXPOSE 4437
+EXPOSE 8000
 
 # Run the application
 CMD ["python", "-m", "network_discovery"]
