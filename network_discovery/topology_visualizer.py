@@ -94,21 +94,43 @@ def generate_topology_html(job_id: str) -> str:
                     
                     # Add devices to the dictionary if they don't exist
                     if source_device not in devices:
+                        # Try to determine device type from hostname
+                        device_type = "cisco_xe"  # Default
+                        if "switch" in source_device.lower():
+                            device_type = "switch"
+                        elif "router" in source_device.lower():
+                            device_type = "router"
+                        elif "core" in source_device.lower():
+                            device_type = "router"
+                        elif "edge" in source_device.lower():
+                            device_type = "router"
+                            
                         devices[source_device] = {
                             "hostname": source_device,
                             "ip_address": source_device,  # Use hostname as IP if we don't have real IP
                             "platform": "cisco",  # Default platform
-                            "device_type": "cisco_xe",  # Default device type
+                            "device_type": device_type,
                             "discovery_status": "discovered",
                             "interfaces": []
                         }
                     
                     if target_device not in devices:
+                        # Try to determine device type from hostname
+                        device_type = "cisco_xe"  # Default
+                        if "switch" in target_device.lower():
+                            device_type = "switch"
+                        elif "router" in target_device.lower():
+                            device_type = "router"
+                        elif "core" in target_device.lower():
+                            device_type = "router"
+                        elif "edge" in target_device.lower():
+                            device_type = "router"
+                            
                         devices[target_device] = {
                             "hostname": target_device,
                             "ip_address": target_device,  # Use hostname as IP if we don't have real IP
                             "platform": "cisco",  # Default platform
-                            "device_type": "cisco_xe",  # Default device type
+                            "device_type": device_type,
                             "discovery_status": "discovered",
                             "interfaces": []
                         }
@@ -189,19 +211,34 @@ def generate_topology_html(job_id: str) -> str:
     <title>Network Topology</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
-        #topology { width: 100%; height: 800px; border: 1px solid #ddd; }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+        #topology { width: 100%; height: 800px; border: 1px solid #ddd; background-color: white; border-radius: 5px; }
         .node { cursor: pointer; }
-        .link { stroke: #999; stroke-opacity: 0.6; stroke-width: 2px; }
-        .node text { font-size: 12px; font-weight: bold; }
+        .link { stroke: #666; stroke-opacity: 0.6; stroke-width: 2px; }
+        .node text { 
+            font-size: 12px; 
+            font-weight: bold; 
+            text-shadow: 0 0 3px white, 0 0 3px white, 0 0 3px white; /* Text outline for better readability */
+        }
         .tooltip { 
             position: absolute; 
             background: white; 
             border: 1px solid #ddd; 
-            border-radius: 4px; 
-            padding: 10px; 
+            border-radius: 8px; 
+            padding: 0; /* Padding is handled in the HTML */
             pointer-events: none;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            max-width: 500px;
+            font-size: 12px;
+            z-index: 1000;
+        }
+        /* Style for interface lists */
+        .tooltip ul {
+            margin: 5px 0;
+            padding-left: 20px;
+        }
+        .tooltip li {
+            margin-bottom: 3px;
         }
         .legend {
             position: absolute;
@@ -306,18 +343,18 @@ def generate_topology_html(job_id: str) -> str:
                 </details>
             `);
             
-        // Initialize force simulation with stronger forces to ensure visibility
+        // Initialize force simulation with much stronger forces to ensure better spacing
         const simulation = d3.forceSimulation(nodes)
-            .force("link", d3.forceLink(links).id(d => d.id).distance(80))
-            .force("charge", d3.forceManyBody().strength(-300))
-            .force("collide", d3.forceCollide().radius(40).strength(1))
+            .force("link", d3.forceLink(links).id(d => d.id).distance(150)) // Increased distance between linked nodes
+            .force("charge", d3.forceManyBody().strength(-800)) // Stronger repulsion
+            .force("collide", d3.forceCollide().radius(60).strength(1)) // Larger collision radius
             .force("center", d3.forceCenter(width / 2, height / 2))
-            .force("x", d3.forceX(width / 2).strength(0.1))
-            .force("y", d3.forceY(height / 2).strength(0.1))
-            .alphaDecay(0.005) // Very slow cooling for better layout
+            .force("x", d3.forceX(width / 2).strength(0.05)) // Reduced strength to allow more spreading
+            .force("y", d3.forceY(height / 2).strength(0.05)) // Reduced strength to allow more spreading
+            .alphaDecay(0.003) // Even slower cooling for better layout
             .alpha(1)
             .alphaTarget(0)
-            .velocityDecay(0.3)
+            .velocityDecay(0.2) // Lower decay for more movement
             .restart() // Restart with high energy
         
         const svg = d3.select("#topology")
@@ -441,13 +478,13 @@ def generate_topology_html(job_id: str) -> str:
         
         // Background for nodes
         node.append("circle")
-            .attr("r", 25)
+            .attr("r", 30) // Larger radius
             .attr("stroke", "#333")
             .attr("stroke-width", 2)
             .attr("fill", d => {
-                if (d.status === 'discovered') return "#69b3a2";
-                if (d.status === 'failed') return "#ff7f7f";
-                if (d.status === 'unreachable') return "#cccccc";
+                if (d.discovery_status === 'discovered') return "#69b3a2";
+                if (d.discovery_status === 'failed') return "#ff7f7f";
+                if (d.discovery_status === 'unreachable') return "#cccccc";
                 return "#b8b8b8";
             });
             
@@ -463,15 +500,33 @@ def generate_topology_html(job_id: str) -> str:
                     return "#device";
                 }
             })
-            .attr("width", 30)
-            .attr("height", 30)
-            .attr("x", -15)
-            .attr("y", -15);
+            .attr("width", 40) // Larger icon
+            .attr("height", 40)
+            .attr("x", -20)
+            .attr("y", -20);
         
-        // Node labels
-        node.append("text")
-            .attr("dy", 40)
+        // Node labels with background for better readability
+        const labels = node.append("g");
+        
+        // Label background
+        labels.append("rect")
+            .attr("y", 35)
+            .attr("x", d => -d.hostname.length * 4 - 5) // Adjust width based on text length
+            .attr("width", d => d.hostname.length * 8 + 10)
+            .attr("height", 20)
+            .attr("rx", 5)
+            .attr("ry", 5)
+            .attr("fill", "white")
+            .attr("fill-opacity", 0.8)
+            .attr("stroke", "#333")
+            .attr("stroke-width", 1);
+        
+        // Node label text
+        labels.append("text")
+            .attr("dy", 50)
             .attr("text-anchor", "middle")
+            .attr("font-weight", "bold")
+            .attr("font-size", "12px")
             .text(d => d.hostname);
         
         // Tooltip
@@ -487,9 +542,29 @@ def generate_topology_html(job_id: str) -> str:
                 
             let interfaceList = '';
             if (d.interfaces && d.interfaces.length > 0) {
-                interfaceList = '<h4>Interfaces:</h4><ul>';
+                interfaceList = '<h4>Interfaces:</h4><ul style="padding-left: 20px; margin-top: 5px;">';
                 d.interfaces.forEach(intf => {
-                    interfaceList += `<li>${intf.name}${intf.ip_address ? ' - ' + intf.ip_address : ''}</li>`;
+                    // Extract interface name from the full string
+                    let intfName = intf.name;
+                    if (intfName.includes('[')) {
+                        intfName = intfName.split('[')[1].replace(']', '');
+                    }
+                    
+                    // Extract connected device from the full string
+                    let connectedTo = '';
+                    if (intf.connected_to) {
+                        const parts = intf.connected_to.split(':');
+                        if (parts.length > 1) {
+                            const deviceName = parts[0];
+                            let intfName = parts[1];
+                            if (intfName.includes('[')) {
+                                intfName = intfName.split('[')[1].replace(']', '');
+                            }
+                            connectedTo = ` → <strong>${deviceName}</strong> (${intfName})`;
+                        }
+                    }
+                    
+                    interfaceList += `<li><strong>${intfName}</strong>${intf.ip_address ? ' - ' + intf.ip_address : ''}${connectedTo}</li>`;
                 });
                 interfaceList += '</ul>';
             }
@@ -530,13 +605,21 @@ def generate_topology_html(job_id: str) -> str:
             }
             
             tooltip.html(`
-                <div style="font-weight:bold; font-size:14px;">${d.hostname}</div>
-                <div><strong>IP:</strong> ${d.ip}</div>
-                <div><strong>Platform:</strong> ${d.platform}</div>
-                <div><strong>Type:</strong> ${d.device_type}</div>
-                <div><strong>Status:</strong> ${d.status}</div>
-                ${neighborList}
-                ${interfaceList}
+                <div style="padding: 15px; max-width: 400px; max-height: 600px; overflow-y: auto; background-color: white; border: 1px solid #ccc; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.2);">
+                    <h3 style="margin-top: 0; color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 8px; font-size: 16px;">${d.hostname}</h3>
+                    <div style="display: grid; grid-template-columns: auto 1fr; gap: 5px; margin-bottom: 10px;">
+                        <div><strong>IP:</strong></div>
+                        <div>${d.ip_address || d.hostname}</div>
+                        <div><strong>Platform:</strong></div>
+                        <div>${d.platform || 'Unknown'}</div>
+                        <div><strong>Type:</strong></div>
+                        <div>${d.device_type || 'Unknown'}</div>
+                        <div><strong>Status:</strong></div>
+                        <div>${d.discovery_status || 'Unknown'}</div>
+                    </div>
+                    ${neighborList}
+                    ${interfaceList}
+                </div>
             `)
             .style("left", (event.pageX + 10) + "px")
             .style("top", (event.pageY - 28) + "px");
