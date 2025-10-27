@@ -36,7 +36,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install lightweight runtime dependencies
+# Install lightweight runtime dependencies including nginx and openssl
 RUN apt-get update && apt-get install -y \
     openssh-client \
     iputils-ping \
@@ -56,7 +56,20 @@ RUN apt-get update && apt-get install -y \
     gcc \
     build-essential \
     python3-dev \
+    nginx \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
+
+# Generate self-signed SSL certificate
+RUN mkdir -p /certs && \
+    openssl req -x509 -nodes -days 3650 \
+      -subj "/CN=localhost" \
+      -newkey rsa:2048 \
+      -keyout /certs/server.key \
+      -out /certs/server.crt
+
+# Copy nginx configuration
+COPY nginx.conf /etc/nginx/nginx.conf
 
 # Set up Java environment
 ENV JAVA_HOME=/usr/lib/jvm/default-java
@@ -85,12 +98,16 @@ ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app
 ENV LOG_LEVEL=info
 ENV BATFISH_HOST=batfish
 ENV HOST=0.0.0.0
-ENV PORT=8000
+ENV PORT=8080
 ENV TRANSPORT=http
 ENV ENABLE_MCP=false
 
-# Expose API and MCP ports
+# Expose HTTPS port
 EXPOSE 8000
 
-# Run the application
-CMD ["python", "-m", "network_discovery"]
+# Copy entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Run both nginx and the FastMCP server
+ENTRYPOINT ["/entrypoint.sh"]
