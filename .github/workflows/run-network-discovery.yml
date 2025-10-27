@@ -1,5 +1,4 @@
 name: "HAI Network Discovery"
-description: "Runs full discovery pipeline using a locally deployed FastAPI environment and uploads artifacts."
 
 on:
   workflow_dispatch:
@@ -26,8 +25,9 @@ on:
         default: "10"
 
 env:
-  BASE_URL: "http://localhost:8000"
+  BASE_URL: "https://localhost:8000"
   POLL_INTERVAL: ${{ github.event.inputs.poll_interval || '10' }}
+  CURL_OPTS: "-k"  # -k flag to ignore SSL certificate validation
 
 jobs:
   discover-network:
@@ -45,11 +45,36 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq curl
       
+      # Download required docker-compose files
+      - name: Download docker-compose files
+        run: |
+          echo "Downloading docker-compose files..."
+          curl -o docker-compose.yml https://raw.githubusercontent.com/Presidio-Federal/network-discovery-mcp/main/docker-compose.yml
+          curl -o docker-compose.mcp.yml https://raw.githubusercontent.com/Presidio-Federal/network-discovery-mcp/main/docker-compose.mcp.yml
+          echo "Docker compose files downloaded successfully"
+      
       # Step 0 - Deploy environment
       - name: Deploy network discovery environment
         run: |
           echo "Starting network discovery services..."
+          # Check if docker-compose file exists
+          if [ ! -f "./docker-compose.yml" ]; then
+            echo "ERROR: docker-compose.yml not found!"
+            ls -la
+            exit 1
+          fi
+          
+          # Start the containers
           docker compose -f ./docker-compose.yml up -d
+          
+          # Check if containers started
+          echo "Checking if containers started..."
+          if ! docker ps | grep -q "network-discovery"; then
+            echo "ERROR: Containers failed to start!"
+            docker ps
+            docker compose logs
+            exit 1
+          fi
           
           # Wait for service to start
           echo "Waiting for service to start..."
@@ -57,22 +82,38 @@ jobs:
           RETRY_COUNT=0
           
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            if curl -s ${{ env.BASE_URL }}/ > /dev/null; then
+            RESPONSE=$(curl ${{ env.CURL_OPTS }} -s -w "\n%{http_code}" ${{ env.BASE_URL }}/docs)
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            
+            if [ "$HTTP_CODE" == "200" ]; then
               echo "Service is up and running"
               break
             fi
             
             echo "Waiting for service to start (attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
+            echo "HTTP Code: $HTTP_CODE"
+            
+            if [ $RETRY_COUNT -eq 10 ] || [ $RETRY_COUNT -eq 20 ]; then
+              echo "Checking container status..."
+              docker ps
+              docker compose logs --tail 20
+            fi
+            
             sleep 2
             RETRY_COUNT=$((RETRY_COUNT+1))
           done
           
           if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-            echo "Service failed to start within the timeout period"
+            echo "ERROR: Service failed to start within the timeout period"
+            docker ps
             docker compose logs
             docker compose down
             exit 1
           fi
+          
+          # Show API endpoints
+          echo "Available API endpoints:"
+          curl ${{ env.CURL_OPTS }} -s ${{ env.BASE_URL }}/docs | grep -o '/v1/[^"]*' || echo "No endpoints found or docs not available"
       
       # Step 1 - Start Seeding
       - name: Start seeding process
@@ -86,8 +127,23 @@ jobs:
             PASSWORD="${{ secrets.DEVICE_PASSWORD }}"
           fi
           
+          # Check if API is responding
+          echo "Checking if API is responding..."
+          API_RESPONSE=$(curl ${{ env.CURL_OPTS }} -s -w "\n%{http_code}" "${{ env.BASE_URL }}/docs")
+          HTTP_CODE=$(echo "$API_RESPONSE" | tail -n1)
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: API is not responding correctly. HTTP code: $HTTP_CODE"
+            echo "API response: $(echo "$API_RESPONSE" | head -n -1)"
+            echo "Checking container status..."
+            docker ps
+            docker compose logs
+            exit 1
+          fi
+          
           # Start seeder
-          JOB_ID=$(curl -s -X POST "${{ env.BASE_URL }}/v1/seed" \
+          echo "Sending seed request..."
+          SEED_RESPONSE=$(curl ${{ env.CURL_OPTS }} -s -w "\n%{http_code}" -X POST "${{ env.BASE_URL }}/v1/seed" \
             -H "Content-Type: application/json" \
             -d "{
               \"seed_host\": \"${{ github.event.inputs.seed_host }}\",
@@ -96,14 +152,37 @@ jobs:
                 \"password\": \"$PASSWORD\"
               },
               \"methods\": [\"interfaces\",\"routing\",\"arp\",\"cdp\"]
-            }" | jq -r '.job_id')
+            }")
+          
+          HTTP_CODE=$(echo "$SEED_RESPONSE" | tail -n1)
+          SEED_BODY=$(echo "$SEED_RESPONSE" | head -n -1)
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: Seed request failed. HTTP code: $HTTP_CODE"
+            echo "Response body: $SEED_BODY"
+            docker compose logs
+            exit 1
+          fi
+          
+          # Parse job_id from response
+          echo "Parsing job_id from response..."
+          echo "Response: $SEED_BODY"
+          
+          JOB_ID=$(echo "$SEED_BODY" | jq -r '.job_id')
+          
+          if [ -z "$JOB_ID" ] || [ "$JOB_ID" == "null" ]; then
+            echo "ERROR: Failed to parse job_id from response"
+            echo "Response body: $SEED_BODY"
+            docker compose logs
+            exit 1
+          fi
           
           echo "Job ID: $JOB_ID"
           echo "job_id=$JOB_ID" >> $GITHUB_OUTPUT
           
           # Poll for seeder completion
           echo "Waiting for seeder to complete..."
-          until [[ "$(curl -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.seeder.status')" == "completed" ]]; do
+          until [[ "$(curl ${{ env.CURL_OPTS }} -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.seeder.status')" == "completed" ]]; do
             echo "Seeder in progress..."
             sleep ${{ env.POLL_INTERVAL }}
           done
@@ -127,7 +206,7 @@ jobs:
           PROBE_PORTS="$PROBE_PORTS]"
           
           echo "Running IP scan with ports $PROBE_PORTS..."
-          curl -s -X POST "${{ env.BASE_URL }}/v1/scan" \
+          curl ${{ env.CURL_OPTS }} -s -X POST "${{ env.BASE_URL }}/v1/scan" \
             -H "Content-Type: application/json" \
             -d "{
               \"job_id\": \"$JOB_ID\",
@@ -137,7 +216,7 @@ jobs:
           
           # Poll for scanner completion
           echo "Waiting for scanner to complete..."
-          until [[ "$(curl -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.scanner.status')" == "completed" ]]; do
+          until [[ "$(curl ${{ env.CURL_OPTS }} -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.scanner.status')" == "completed" ]]; do
             echo "Scanner in progress..."
             sleep ${{ env.POLL_INTERVAL }}
           done
@@ -148,7 +227,7 @@ jobs:
           
           # Retrieve reachable hosts
           echo "Retrieving reachable hosts..."
-          curl -s "${{ env.BASE_URL }}/v1/scan/$JOB_ID/reachable" | jq '.' > ./discovery-artifacts/reachable.json
+          curl ${{ env.CURL_OPTS }} -s "${{ env.BASE_URL }}/v1/scan/$JOB_ID/reachable" | jq '.' > ./discovery-artifacts/reachable.json
           REACHABLE=$(jq -c '.hosts' ./discovery-artifacts/reachable.json)
           echo "reachable_hosts=$REACHABLE" >> $GITHUB_OUTPUT
           
@@ -163,20 +242,20 @@ jobs:
           JOB_ID="${{ steps.seed.outputs.job_id }}"
           
           echo "Starting fingerprinting..."
-          curl -s -X POST "${{ env.BASE_URL }}/v1/fingerprint" \
+          curl ${{ env.CURL_OPTS }} -s -X POST "${{ env.BASE_URL }}/v1/fingerprint" \
             -H "Content-Type: application/json" \
             -d "{\"job_id\": \"$JOB_ID\"}"
           
           # Poll for fingerprinting completion
           echo "Waiting for fingerprinting to complete..."
-          until [[ "$(curl -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.fingerprinter.status')" == "completed" ]]; do
+          until [[ "$(curl ${{ env.CURL_OPTS }} -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.fingerprinter.status')" == "completed" ]]; do
             echo "Fingerprinting in progress..."
             sleep ${{ env.POLL_INTERVAL }}
           done
           echo "Fingerprinting completed"
           
           # Save fingerprint results
-          curl -s "${{ env.BASE_URL }}/v1/fingerprint/$JOB_ID" | jq '.' > ./discovery-artifacts/fingerprints.json
+          curl ${{ env.CURL_OPTS }} -s "${{ env.BASE_URL }}/v1/fingerprint/$JOB_ID" | jq '.' > ./discovery-artifacts/fingerprints.json
       
       # Step 4 - Collect Device State
       - name: Collect device configurations
@@ -191,7 +270,7 @@ jobs:
           fi
           
           echo "Collecting device configurations..."
-          curl -s -X POST "${{ env.BASE_URL }}/v1/state/collect" \
+          curl ${{ env.CURL_OPTS }} -s -X POST "${{ env.BASE_URL }}/v1/state/collect" \
             -H "Content-Type: application/json" \
             -d "{
               \"job_id\": \"$JOB_ID\",
@@ -204,7 +283,7 @@ jobs:
           
           # Poll for state collection completion
           echo "Waiting for state collection to complete..."
-          until [[ "$(curl -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.state_collector.status')" == "completed" ]]; do
+          until [[ "$(curl ${{ env.CURL_OPTS }} -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.state_collector.status')" == "completed" ]]; do
             echo "State collection in progress..."
             sleep ${{ env.POLL_INTERVAL }}
           done
@@ -217,18 +296,18 @@ jobs:
           JOB_ID="${{ steps.seed.outputs.job_id }}"
           
           echo "Building Batfish snapshot..."
-          curl -s -X POST "${{ env.BASE_URL }}/v1/batfish/build" \
+          curl ${{ env.CURL_OPTS }} -s -X POST "${{ env.BASE_URL }}/v1/batfish/build" \
             -H "Content-Type: application/json" \
             -d "{\"job_id\": \"$JOB_ID\"}"
           
           echo "Loading Batfish snapshot..."
-          curl -s -X POST "${{ env.BASE_URL }}/v1/batfish/load" \
+          curl ${{ env.CURL_OPTS }} -s -X POST "${{ env.BASE_URL }}/v1/batfish/load" \
             -H "Content-Type: application/json" \
             -d "{\"job_id\": \"$JOB_ID\"}"
           
           # Poll for Batfish loading completion
           echo "Waiting for Batfish snapshot loading to complete..."
-          until [[ "$(curl -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.batfish_loader.status')" == "loaded" ]]; do
+          until [[ "$(curl ${{ env.CURL_OPTS }} -s ${{ env.BASE_URL }}/v1/status/$JOB_ID | jq -r '.batfish_loader.status')" == "loaded" ]]; do
             echo "Batfish loading in progress..."
             sleep ${{ env.POLL_INTERVAL }}
           done
@@ -236,8 +315,8 @@ jobs:
           
           # Step 6 - Retrieve Topology
           echo "Retrieving network topology..."
-          curl -s "${{ env.BASE_URL }}/v1/batfish/topology?job_id=$JOB_ID" -o ./discovery-artifacts/topology.json
-          curl -s "${{ env.BASE_URL }}/v1/batfish/topology/html?job_id=$JOB_ID" -o ./discovery-artifacts/topology.html
+          curl ${{ env.CURL_OPTS }} -s "${{ env.BASE_URL }}/v1/batfish/topology?job_id=$JOB_ID" -o ./discovery-artifacts/topology.json
+          curl ${{ env.CURL_OPTS }} -s "${{ env.BASE_URL }}/v1/batfish/topology/html?job_id=$JOB_ID" -o ./discovery-artifacts/topology.html
           
           echo "Network topology saved to discovery-artifacts/topology.json and discovery-artifacts/topology.html"
       
@@ -258,5 +337,29 @@ jobs:
         if: always()
         run: |
           echo "Cleaning up containers..."
-          docker compose down
+          # Use the downloaded docker-compose file for cleanup
+          if [ -f "./docker-compose.yml" ]; then
+            docker compose -f ./docker-compose.yml down
+          else
+            docker compose down
+          fi
+          
+          # Fix permissions on artifacts directory to avoid EACCES errors in future runs
+          echo "Fixing permissions on artifacts directory..."
+          if [ -d "./artifacts" ]; then
+            # Force remove problematic hidden directories first
+            sudo find ./artifacts -type d -name ".*" -exec rm -rf {} + 2>/dev/null || true
+            
+            # Fix permissions on all files and directories
+            sudo chown -R $(id -u):$(id -g) ./artifacts
+            sudo chmod -R 755 ./artifacts
+            
+            # If permissions can't be fixed, try to remove the entire directory
+            sudo rm -rf ./artifacts || true
+          fi
+          
+          # Clean up docker volumes that might have permission issues
+          echo "Cleaning up docker volumes..."
+          docker volume prune -f
+          
           echo "Cleanup complete"
