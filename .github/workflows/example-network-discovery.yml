@@ -1,0 +1,38 @@
+name: Example Network Discovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed_host:
+        description: 'Seed device IP or hostname'
+        required: true
+        default: '192.168.100.1'
+      username:
+        description: 'Device username'
+        required: true
+        default: 'cisco'
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Run network discovery
+        id: network-discovery
+        uses: ./.github/actions/discover-network
+        with:
+          seed_host: ${{ github.event.inputs.seed_host }}
+          username: ${{ github.event.inputs.username }}
+          password: ${{ secrets.DEVICE_PASSWORD || 'cisco' }}
+          ports: "22,443,23"
+        
+      - name: Process discovery results
+        run: |
+          echo "Discovery job ID: ${{ steps.network-discovery.outputs.job_id }}"
+          echo "Found reachable hosts: ${{ steps.network-discovery.outputs.reachable_hosts }}"
+          
+          # Example of further processing with the results
+          echo "You can now process the discovery artifacts"
+          ls -la $(find . -name "discovery-artifacts")
