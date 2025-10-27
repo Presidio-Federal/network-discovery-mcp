@@ -1,0 +1,168 @@
+name: "HAI Network Discovery"
+description: "Runs full discovery pipeline on localhost FastAPI environment and uploads JSON artifacts."
+inputs:
+  seed_host:
+    description: "Seed device IP or hostname"
+    required: true
+    default: "192.168.100.1"
+  username:
+    description: "Device username"
+    required: true
+    default: "cisco"
+  password:
+    description: "Fallback device password"
+    required: false
+    default: "cisco"
+  ports:
+    description: "Ports to scan (comma-separated)"
+    required: false
+    default: "22,443"
+  poll_interval:
+    description: "Polling interval in seconds"
+    required: false
+    default: "10"
+
+outputs:
+  job_id:
+    description: "The job ID for the discovery run"
+    value: ${{ steps.discovery.outputs.job_id }}
+  reachable_hosts:
+    description: "JSON array of reachable hosts"
+    value: ${{ steps.discovery.outputs.reachable_hosts }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run discovery pipeline
+      id: discovery
+      shell: bash
+      run: |
+        set -e
+        
+        # Step 0 - Deploy environment
+        echo "Starting network discovery environment..."
+        docker compose -f ./docker-compose.yml up -d
+        sleep 5
+        BASE_URL="http://localhost:8000"
+        
+        # Step 1 - Start Seeding
+        echo "Starting seed process from ${{ inputs.seed_host }}..."
+        JOB_ID=$(curl -s -X POST "$BASE_URL/v1/seed" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"seed_host\": \"${{ inputs.seed_host }}\",
+            \"credentials\": {
+              \"username\": \"${{ inputs.username }}\",
+              \"password\": \"${{ inputs.password }}\"
+            },
+            \"methods\": [\"interfaces\",\"routing\",\"arp\",\"cdp\"]
+          }" | jq -r '.job_id')
+        
+        echo "Job ID: $JOB_ID"
+        echo "job_id=$JOB_ID" >> $GITHUB_OUTPUT
+        
+        # Poll for seeder completion
+        echo "Waiting for seeder to complete..."
+        until [[ "$(curl -s $BASE_URL/v1/status/$JOB_ID | jq -r '.seeder.status')" == "completed" ]]; do
+          echo "Seeder in progress..."
+          sleep ${{ inputs.poll_interval }}
+        done
+        echo "Seeder completed"
+        
+        # Step 2 - Run IP Scan
+        echo "Starting IP scan..."
+        curl -s -X POST "$BASE_URL/v1/scan" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"job_id\": \"$JOB_ID\",
+            \"ports\": [${{ inputs.ports }}],
+            \"concurrency\": 200
+          }"
+        
+        # Poll for scanner completion
+        echo "Waiting for scanner to complete..."
+        until [[ "$(curl -s $BASE_URL/v1/status/$JOB_ID | jq -r '.scanner.status')" == "completed" ]]; do
+          echo "Scanner in progress..."
+          sleep ${{ inputs.poll_interval }}
+        done
+        echo "Scanner completed"
+        
+        # Step 3 - Retrieve Reachable Hosts
+        echo "Retrieving reachable hosts..."
+        mkdir -p ./discovery-artifacts
+        curl -s "$BASE_URL/v1/scan/$JOB_ID/reachable" | jq '.' > ./discovery-artifacts/reachable.json
+        REACHABLE=$(jq -c '.hosts' ./discovery-artifacts/reachable.json)
+        echo "reachable_hosts=$REACHABLE" >> $GITHUB_OUTPUT
+        
+        # Step 4 - Fingerprint
+        echo "Starting fingerprinting..."
+        curl -s -X POST "$BASE_URL/v1/fingerprint" \
+          -H "Content-Type: application/json" \
+          -d "{\"job_id\": \"$JOB_ID\"}"
+        
+        # Poll for fingerprinting completion
+        echo "Waiting for fingerprinting to complete..."
+        until [[ "$(curl -s $BASE_URL/v1/status/$JOB_ID | jq -r '.fingerprinter.status')" == "completed" ]]; do
+          echo "Fingerprinting in progress..."
+          sleep ${{ inputs.poll_interval }}
+        done
+        echo "Fingerprinting completed"
+        
+        # Save fingerprint results
+        curl -s "$BASE_URL/v1/fingerprint/$JOB_ID" | jq '.' > ./discovery-artifacts/fingerprints.json
+        
+        # Step 5 - Collect Device State
+        echo "Collecting device configurations..."
+        curl -s -X POST "$BASE_URL/v1/state/collect" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"job_id\": \"$JOB_ID\",
+            \"credentials\": {
+              \"username\": \"${{ inputs.username }}\",
+              \"password\": \"${{ inputs.password }}\"
+            }
+          }"
+        
+        # Poll for state collection completion
+        echo "Waiting for state collection to complete..."
+        until [[ "$(curl -s $BASE_URL/v1/status/$JOB_ID | jq -r '.state_collector.status')" == "completed" ]]; do
+          echo "State collection in progress..."
+          sleep ${{ inputs.poll_interval }}
+        done
+        echo "State collection completed"
+        
+        # Step 6 - Build and Load Batfish Snapshot
+        echo "Building Batfish snapshot..."
+        curl -s -X POST "$BASE_URL/v1/batfish/build" \
+          -H "Content-Type: application/json" \
+          -d "{\"job_id\": \"$JOB_ID\"}"
+        
+        echo "Loading Batfish snapshot..."
+        curl -s -X POST "$BASE_URL/v1/batfish/load" \
+          -H "Content-Type: application/json" \
+          -d "{\"job_id\": \"$JOB_ID\"}"
+        
+        # Poll for Batfish loading completion
+        echo "Waiting for Batfish snapshot loading to complete..."
+        until [[ "$(curl -s $BASE_URL/v1/status/$JOB_ID | jq -r '.batfish_loader.status')" == "loaded" ]]; do
+          echo "Batfish loading in progress..."
+          sleep ${{ inputs.poll_interval }}
+        done
+        echo "Batfish snapshot loaded"
+        
+        # Step 7 - Retrieve Topology
+        echo "Retrieving network topology..."
+        curl -s "$BASE_URL/v1/batfish/topology?job_id=$JOB_ID" -o ./discovery-artifacts/topology.json
+        curl -s "$BASE_URL/v1/batfish/topology/html?job_id=$JOB_ID" -o ./discovery-artifacts/topology.html
+        
+        echo "Discovery process completed successfully"
+        
+    - name: Upload discovery artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: network-discovery-results
+        path: |
+          ./discovery-artifacts/reachable.json
+          ./discovery-artifacts/fingerprints.json
+          ./discovery-artifacts/topology.json
+          ./discovery-artifacts/topology.html

@@ -1,10 +1,52 @@
 # Network Discovery MCP
 
-A modular, containerized network discovery service for the HAI platform.
+A modular, containerized network discovery service for automated network mapping and analysis.
 
 ## Overview
 
-This service provides lightweight, API-driven network discovery capabilities with Model Context Protocol (MCP) integration for AI agents. It consists of six main modules:
+Network Discovery MCP is a comprehensive solution for discovering, mapping, and analyzing network infrastructure. Starting from a single seed device, it automatically discovers the entire network topology, collects device configurations, and generates interactive visualizations.
+
+### Key Features
+
+- **Automated Network Discovery**: Map your entire network from a single seed device
+- **Configuration Collection**: Retrieve and store device configurations securely
+- **Topology Visualization**: Generate interactive HTML network maps
+- **Network Analysis**: Leverage Batfish for advanced network analysis
+- **AI Integration**: Built-in Model Context Protocol (MCP) support for AI agents
+
+### Running Modes
+
+The service can run in two distinct modes:
+
+1. **REST API Mode** (Default): Traditional HTTP API endpoints for:
+   - Integration with existing tools and workflows
+   - Running via GitHub Actions or CI/CD pipelines
+   - Programmatic access from any language or system
+
+2. **MCP Mode**: Model Context Protocol server for:
+   - Direct integration with AI agents
+   - Autonomous network discovery operations
+   - Tool-based interaction model for AI systems
+
+Both modes provide identical functionality but with different integration patterns. We recommend using Docker Compose for deployment as both modes depend on the Batfish container for network analysis and visualization.
+
+### Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/username/network-discovery-mcp.git
+cd network-discovery-mcp
+
+# Start in REST API mode (default)
+docker compose up -d
+
+# OR start in MCP mode
+docker compose -f docker-compose.mcp.yml up -d
+```
+
+### Components
+
+The service consists of six main modules working together:
 
 1. **SEEDER**: Starts from a known device (seed) and collects potential subnets and candidate IPs via interfaces, VRFs, ARP, CDP/LLDP, and routing tables.
 2. **IP-SCANNER**: Probes for open management ports (default: 22 and 443) across candidate IPs or subnets.
@@ -13,11 +55,217 @@ This service provides lightweight, API-driven network discovery capabilities wit
 5. **BATFISH-LOADER**: Builds and loads Batfish snapshots for network analysis and topology extraction.
 6. **TOPOLOGY-VISUALIZER**: Generates interactive HTML visualizations of network topologies using Batfish data.
 
-The service can run in two modes:
-- **REST API Mode**: Traditional HTTP API endpoints for direct integration
-- **MCP Mode**: Model Context Protocol server for seamless AI agent integration
+## Deployment Options
 
-All functionality is available through both interfaces, producing well-structured artifacts for downstream tools (NSO, Batfish, etc.) in a job-scoped workspace.
+### Docker Compose (Recommended)
+
+The recommended way to deploy Network Discovery MCP is using Docker Compose, which automatically sets up both the network discovery service and the required Batfish container.
+
+#### REST API Mode (Default)
+
+Run the container in REST API mode:
+
+```bash
+# Start both network-discovery and batfish containers
+docker compose up -d
+```
+
+Access the API documentation at: http://localhost:8000/docs
+
+#### MCP Mode for AI Integration
+
+Run the container in MCP mode for direct AI agent integration:
+
+```bash
+# Start both containers with MCP enabled
+docker compose -f docker-compose.mcp.yml up -d
+```
+
+Access the MCP server at: http://localhost:8000/mcp
+
+### GitHub Actions Integration
+
+The repository includes a ready-to-use GitHub Actions workflow for running network discovery:
+
+```yaml
+name: Discover Network
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed_host:
+        description: "Seed device IP or hostname"
+        required: true
+        default: "192.168.100.1"
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run network discovery
+        uses: ./.github/workflows/run-network-discovery.yml
+        with:
+          seed_host: ${{ github.event.inputs.seed_host }}
+          username: "admin"
+        env:
+          DEVICE_PASSWORD: ${{ secrets.DEVICE_PASSWORD }}
+```
+
+This workflow:
+1. Deploys the network discovery environment using Docker Compose
+2. Runs the full discovery pipeline from a seed device
+3. Uploads artifacts including topology visualization
+
+### Advanced Deployment Options
+
+#### Port Forwarding Configuration
+
+If you need to run behind a reverse proxy or port forwarding, use the BASE_PATH environment variable:
+
+```bash
+# Example: Using a base path with external port forwarding
+export BASE_PATH="/api"
+docker compose -f docker-compose.mcp.yml up -d
+```
+
+Access the MCP server at: http://your-server:8000/api/mcp
+
+#### Single Container Deployment
+
+If you prefer to run just the network discovery container:
+
+```bash
+# REST API Mode
+docker pull ghcr.io/username/network-discovery-mcp:latest
+docker run -p 8000:8000 -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
+
+# MCP Mode
+docker run -p 8000:8000 -e ENABLE_MCP=true -e TRANSPORT=http -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
+```
+
+Note: Running without Batfish will disable topology visualization and analysis features.
+
+## Integration Methods
+
+### REST API Integration
+
+The REST API mode provides traditional HTTP endpoints for programmatic access. This is ideal for:
+
+- Integration with existing tools and scripts
+- CI/CD pipelines and automation workflows
+- Custom applications that need network discovery capabilities
+
+Example API call to start the discovery process:
+
+```bash
+curl -X POST http://localhost:8000/v1/seed \
+  -H "Content-Type: application/json" \
+  -d '{
+    "seed_host": "192.168.1.1",
+    "credentials": {
+      "username": "admin",
+      "password": "cisco"
+    },
+    "methods": ["interfaces", "routing", "arp", "cdp"]
+  }'
+```
+
+See the [API Endpoints Reference](#api-endpoints-reference) for a complete list of available endpoints.
+
+### AI Agent Integration with MCP
+
+The MCP mode provides a Model Context Protocol interface for direct AI agent integration. This enables AI agents to:
+
+- Discover and analyze networks autonomously
+- Make decisions based on network topology and configuration
+- Execute complex workflows without human intervention
+
+#### Available MCP Tools
+
+The MCP server exposes tools in these categories:
+
+**Seeder Tools**
+- `seed_device`: Start network discovery from a seed device
+- `get_targets`: Retrieve targets collected from the seed device
+
+**Scanner Tools**
+- `scan_targets`: Scan targets for open management ports
+- `scan_from_subnets`: Scan specific subnets for open management ports
+- `get_reachable_hosts`: Get only reachable hosts from scan results
+
+**Fingerprinter Tools**
+- `fingerprint_devices`: Start fingerprinting discovered devices
+- `get_fingerprint_results`: Get fingerprinting results for a job
+
+**Config Collector Tools**
+- `collect_device_configs`: Collect device configurations
+- `get_device_config`: Get configuration for a specific device
+
+**Batfish Tools**
+- `build_batfish_snapshot`: Build a Batfish snapshot
+- `load_batfish_snapshot`: Load a Batfish snapshot
+- `get_topology`: Get network topology in JSON format
+- `generate_topology_visualization`: Generate interactive HTML visualization
+
+#### Testing with FastMCP Inspector
+
+You can test the MCP server using the FastMCP Inspector:
+
+```bash
+# Install FastMCP Inspector
+npm install -g @presidio-federal/fastmcp-inspector
+
+# Connect to the MCP server
+fastmcp-inspector http://localhost:8000/mcp
+```
+
+#### Example MCP Workflow
+
+Here's how an AI agent would interact with the MCP server:
+
+```python
+# 1. Seed from a device
+result = mcp.invoke("seed_device", {
+    "seed_host": "192.168.1.1",
+    "credentials": {"username": "admin", "password": "cisco"},
+    "methods": ["interfaces", "routing", "arp", "cdp"]
+})
+job_id = result["job_id"]
+
+# 2. Scan discovered targets
+mcp.invoke("scan_targets", {
+    "job_id": job_id,
+    "ports": [22, 443, 830]
+})
+
+# 3. Fingerprint discovered devices
+mcp.invoke("fingerprint_devices", {"job_id": job_id})
+
+# 4. Collect device configurations
+mcp.invoke("collect_device_configs", {
+    "job_id": job_id,
+    "credentials": {"username": "admin", "password": "cisco"}
+})
+
+# 5. Build and load Batfish snapshot
+mcp.invoke("build_batfish_snapshot", {"job_id": job_id})
+mcp.invoke("load_batfish_snapshot", {"job_id": job_id})
+
+# 6. Generate topology visualization
+result = mcp.invoke("generate_topology_visualization", {"job_id": job_id})
+topology_path = result["path"]
+```
+
+#### MCP Configuration
+
+The MCP server can be configured using the following environment variables:
+
+- `ENABLE_MCP`: Set to `true` to enable MCP mode (default: `false`)
+- `TRANSPORT`: MCP transport type, set to `http` for HTTP transport (default: `http`)
+- `HOST`: Host to bind the server to (default: `0.0.0.0`)
+- `PORT`: Port to listen on (default: `8000`)
+- `BASE_PATH`: Base path for the MCP endpoint (default: `""`)
 
 ## Architecture
 
@@ -80,7 +328,7 @@ Each run creates a job directory:
 
 All writes are atomic (`.tmp` → rename).
 
-## API Endpoints
+## API Endpoints Reference
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -107,9 +355,9 @@ All writes are atomic (`.tmp` → rename).
 | GET | `/v1/batfish/networks/{network_name}/snapshot` | Get current snapshot for a network |
 | POST | `/v1/batfish/networks/{network_name}/snapshot/{snapshot_name}` | Set current snapshot for a network |
 
-## Usage Examples
+### Usage Examples
 
-### Seed from a device
+#### Seed from a device
 
 ```bash
 curl -X POST http://localhost:8000/v1/seed \
@@ -133,7 +381,7 @@ Response:
 }
 ```
 
-### Scan from targets
+#### Scan from targets
 
 ```bash
 curl -X POST http://localhost:8000/v1/scan \
@@ -154,7 +402,7 @@ Response:
 }
 ```
 
-### Check status
+#### Check status
 
 ```bash
 curl http://localhost:8000/v1/status/abc123
@@ -182,123 +430,49 @@ Response:
 }
 ```
 
-### Get scan results
+## Interactive HTML Topology Visualization
+
+The `/v1/batfish/topology/html` endpoint generates an interactive HTML visualization of the network topology. This visualization is built using D3.js and provides a rich, interactive experience for exploring the network.
+
+### Features
+
+- **Force-directed graph layout**: Automatically arranges nodes based on their connections
+- **Device names as node labels**: Clearly identifies each network device
+- **Interactive controls**:
+  - Drag nodes to rearrange the layout
+  - Zoom in/out with mouse wheel or pinch gesture
+  - Pan the view by clicking and dragging the background
+  - Hover over nodes to see detailed device information
+- **Auto-sizing**: Adapts to the browser window size
+- **Self-contained**: HTML file includes all necessary visualization code
+
+### How It Works
+
+1. The endpoint connects to Batfish using the Session API
+2. It retrieves the network topology data from `bf.q.edges().answer().frame()`
+3. Device names are extracted from interface identifiers (e.g., "Gig0/0@ROUTER-1" becomes "ROUTER-1")
+4. A D3.js force-directed graph is constructed from the node relationships
+5. The HTML is saved to `/artifacts/{job_id}/topology.html` and returned as a download
+
+### Example Usage Workflow
 
 ```bash
-curl http://localhost:8000/v1/scan/abc123
+# 1. Collect device configurations
+curl -X POST http://localhost:8000/v1/state/collect -H "Content-Type: application/json" \
+  -d '{"job_id": "demo", "credentials": {"username": "admin", "password": "cisco"}}'
+
+# 2. Build and load Batfish snapshot
+curl -X POST http://localhost:8000/v1/batfish/build -H "Content-Type: application/json" \
+  -d '{"job_id": "demo"}'
+curl -X POST http://localhost:8000/v1/batfish/load -H "Content-Type: application/json" \
+  -d '{"job_id": "demo"}'
+
+# 3. Generate and download the topology visualization
+curl -X GET http://localhost:8000/v1/batfish/topology/html?job_id=demo -o network_topology.html
+
+# 4. Open the HTML file in any web browser
+open network_topology.html
 ```
-
-### Get reachable hosts only
-
-```bash
-curl http://localhost:8000/v1/scan/abc123/reachable
-```
-
-### Fingerprint discovered devices
-
-```bash
-curl -X POST http://localhost:8000/v1/fingerprint \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_id": "abc123",
-    "snmp_community": "public",
-    "concurrency": 100
-  }'
-```
-
-Response:
-```json
-{
-  "job_id": "abc123",
-  "status": "running",
-  "message": "Fingerprinting started for job abc123"
-}
-```
-
-### Get fingerprint results
-
-```bash
-curl http://localhost:8000/v1/fingerprint/abc123
-```
-
-Response:
-```json
-{
-  "job_id": "abc123",
-  "fingerprinted_at": "2025-10-19T15:00:00Z",
-  "hosts": [
-    {
-      "ip": "10.0.0.5",
-      "evidence": {
-        "ssh_banner": "SSH-2.0-Cisco-1.25",
-        "tls_cn": "csr1000v.local",
-        "http_server": "Cisco-IOS-XE"
-      },
-      "inference": {
-        "vendor": "Cisco",
-        "model": "IOS-XE",
-        "protocols": ["ssh", "https"],
-        "confidence": 0.9
-      }
-    }
-  ]
-}
-```
-
-## Docker Deployment
-
-### REST API Mode (Default)
-
-Run the container in REST API mode:
-
-```bash
-docker pull ghcr.io/username/network-discovery-mcp:latest
-docker run -p 8000:8000 -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
-```
-
-Access the API documentation at: http://localhost:8000/docs
-
-### MCP Mode
-
-Run the container in MCP mode:
-
-```bash
-docker pull ghcr.io/username/network-discovery-mcp:latest
-docker run -p 8000:8000 -e ENABLE_MCP=true -e TRANSPORT=http -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
-```
-
-Access the MCP server at: http://localhost:8000/mcp
-
-#### Port Forwarding Scenario
-
-If you need to run behind a reverse proxy or port forwarding, use the BASE_PATH environment variable:
-
-```bash
-# Example: Using a base path with external port forwarding
-docker run -p 8000:8000 -e ENABLE_MCP=true -e TRANSPORT=http -e BASE_PATH="/api" -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
-```
-
-Access the MCP server at: http://your-server:8000/api/mcp
-
-### Docker Compose with Batfish
-
-#### REST API Mode
-
-For the full pipeline with Batfish integration in REST API mode:
-
-```bash
-docker compose up --build
-```
-
-#### MCP Mode
-
-For the full pipeline with Batfish integration in MCP mode:
-
-```bash
-docker compose -f docker-compose.mcp.yml up --build
-```
-
-This will start both the network-discovery-mcp service and the Batfish container with a shared volume for artifact exchange.
 
 ## Environment Variables
 
@@ -321,482 +495,6 @@ This will start both the network-discovery-mcp service and the Batfish container
 - `ENABLE_MCP`: Enable MCP mode (default: `false`)
 - `TRANSPORT`: MCP transport type (default: `http`)
 - `BASE_PATH`: Base path for the MCP endpoint (default: `""`) - useful for port forwarding scenarios
-
-## Fingerprinter Module
-
-The fingerprinter module analyzes hosts discovered by the scanner and infers likely vendor, model, and management protocol without logging in.
-
-### Features
-
-- Consumes only ip_scan.json produced by the scanner
-- Performs non-intrusive device fingerprinting:
-  - SSH banner analysis
-  - TLS certificate inspection
-  - HTTP server header examination
-  - Optional SNMP sysDescr retrieval (if community string provided)
-- Never attempts authentication or configuration access
-- Uses pattern matching and heuristics to infer device type
-- Produces fingerprints.json for use by higher-level agents (e.g., NSO onboarding or Batfish enrichment)
-
-### Confidence Scoring
-
-The fingerprinter uses a confidence scoring system to indicate the reliability of its inferences:
-
-- SSH banner match: +0.4
-- HTTP/TLS match: +0.2
-- SNMP sysDescr match: +0.4
-- Maximum confidence score: 1.0
-
-## Config Collector Module
-
-The config collector module retrieves each device's running configuration in parallel and stores it as a separate JSON file.
-
-### Features
-
-- Consumes fingerprints.json produced by the fingerprinter
-- Retrieves running configurations using appropriate methods based on device type:
-  - SSH: `show running-config` (Cisco/Arista) or `show configuration | display set` (Juniper)
-  - NETCONF: For supported devices
-  - RESTCONF: For supported Cisco devices
-- Runs concurrent SSH/API sessions for speed (with semaphore control)
-- Stores each device's config in a separate file under state/{hostname}.json
-- Supports re-collecting a single device's configuration
-
-### Usage Example
-
-Collect all device configurations:
-
-```bash
-curl -X POST http://localhost:8000/v1/state/collect \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_id": "abc123",
-    "credentials": {
-      "username": "admin",
-      "password": "cisco"
-    },
-    "concurrency": 25
-  }'
-```
-
-Response:
-```json
-{
-  "job_id": "abc123",
-  "status": "running",
-  "message": "State collection started for job abc123"
-}
-```
-
-Retrieve a specific device's configuration:
-
-```bash
-curl http://localhost:8000/v1/state/HAI-HQ?job_id=abc123
-```
-
-Response:
-```json
-{
-  "hostname": "HAI-HQ",
-  "vendor": "Cisco",
-  "collected_at": "2025-10-21T00:00:00Z",
-  "protocol": "ssh",
-  "running_config": "!\nversion 17.9\nhostname HAI-HQ\n..."
-}
-```
-
-Update a single device's configuration:
-
-```bash
-curl -X POST http://localhost:8000/v1/state/update/HAI-HQ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_id": "abc123",
-    "credentials": {
-      "username": "admin",
-      "password": "cisco"
-    }
-  }'
-```
-
-Response:
-```json
-{
-  "job_id": "abc123",
-  "status": "running",
-  "message": "State update started for device HAI-HQ"
-}
-```
-
-## Batfish Integration Module
-
-The Batfish integration module builds and loads Batfish snapshots for network analysis and topology extraction.
-
-### Features
-
-- Consumes state/{hostname}.json files produced by the config collector
-- Extracts running configurations and writes them to .cfg files
-- Loads snapshots into a Batfish server for analysis
-- Provides network topology information
-
-### Workflow
-
-1. Collect device configurations:
-```bash
-# 1. Collect configs
-curl -X POST http://localhost:8000/v1/state/collect \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_id": "demo",
-    "credentials": {
-      "username": "admin",
-      "password": "cisco"
-    }
-  }'
-```
-
-2. Build Batfish snapshot:
-```bash
-# 2. Build snapshot
-curl -X POST http://localhost:8000/v1/batfish/build \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_id": "demo"
-  }'
-```
-
-3. Load snapshot into Batfish:
-```bash
-# 3. Load snapshot into Batfish
-curl -X POST http://localhost:8000/v1/batfish/load \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_id": "demo"
-  }'
-```
-
-4. Get network topology:
-```bash
-# 4. Get topology (JSON format)
-curl -X GET http://localhost:8000/v1/batfish/topology?job_id=demo
-```
-
-Response:
-```json
-{
-  "job_id": "demo",
-  "edges": [
-    {"Interface": "Gig0/0@HAI-HQ", "Remote_Interface": "Gig0/1@HAI-BRANCH-1"},
-    {"Interface": "Gig0/1@HAI-HQ", "Remote_Interface": "Gig0/0@HAI-BRANCH-2"}
-  ]
-}
-```
-
-5. Get interactive HTML topology visualization:
-```bash
-# 5. Get HTML visualization
-curl -X GET http://localhost:8000/v1/batfish/topology/html?job_id=demo -o topology.html
-```
-
-This will download an interactive HTML file that can be opened in any web browser. The visualization is generated using Plotly and NetworkX, providing a rich interactive experience.
-
-#### Visualization Features
-
-- **Force-directed graph layout**: Automatically arranges nodes based on their connections
-- **Device names as node labels**: Clearly identifies each network device
-- **Interactive controls**:
-  - Drag nodes to rearrange the layout
-  - Zoom in/out with mouse wheel or pinch gesture
-  - Pan the view by clicking and dragging the background
-  - Hover over nodes to see detailed device information
-- **Auto-sizing**: Adapts to the browser window size
-- **Self-contained**: HTML file includes all necessary visualization code
-
-#### How It Works
-
-1. The endpoint connects to Batfish using the Session API
-2. It retrieves the network topology data from `bf.q.edges().answer().frame()`
-3. Device names are extracted from interface identifiers (e.g., "Gig0/0@ROUTER-1" becomes "ROUTER-1")
-4. A NetworkX graph is constructed from the node relationships
-5. Plotly generates an interactive visualization of the graph
-6. The HTML is saved to `/artifacts/{job_id}/topology.html` and returned as a download
-
-#### Example Usage Workflow
-
-```bash
-# 1. Collect device configurations
-curl -X POST http://localhost:8000/v1/state/collect -H "Content-Type: application/json" \
-  -d '{"job_id": "demo", "credentials": {"username": "admin", "password": "cisco"}}'
-
-# 2. Build and load Batfish snapshot
-curl -X POST http://localhost:8000/v1/batfish/build -H "Content-Type: application/json" \
-  -d '{"job_id": "demo"}'
-curl -X POST http://localhost:8000/v1/batfish/load -H "Content-Type: application/json" \
-  -d '{"job_id": "demo"}'
-
-# 3. Generate and download the topology visualization
-curl -X GET http://localhost:8000/v1/batfish/topology/html?job_id=demo -o network_topology.html
-
-# 4. Open the HTML file in any web browser
-open network_topology.html
-```
-
-## API Endpoints Reference
-
-The network-discovery-mcp service provides the following API endpoints:
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/v1/seed` | Start a seeder operation from a device |
-| POST | `/v1/scan` | Start a scanner operation using existing job targets |
-| POST | `/v1/scan/from-subnets` | Start a scanner operation using subnets |
-| POST | `/v1/scan/add-subnets` | Add subnets to an existing scan job |
-| GET | `/v1/scan/{job_id}` | Get scan results for a job |
-| GET | `/v1/scan/{job_id}/reachable` | Get only reachable hosts from scan results |
-| POST | `/v1/fingerprint` | Start a fingerprinting operation |
-| GET | `/v1/fingerprint/{job_id}` | Get fingerprinting results for a job |
-| POST | `/v1/state/collect` | Collect device configurations |
-| GET | `/v1/state/{hostname}` | Get configuration for a specific device |
-| POST | `/v1/state/update/{hostname}` | Update configuration for a specific device |
-| GET | `/v1/state/status` | Get status of configuration collection |
-| POST | `/v1/batfish/build` | Build a Batfish snapshot |
-| POST | `/v1/batfish/load` | Load a Batfish snapshot |
-| GET | `/v1/batfish/topology` | Get network topology in JSON format |
-| GET | `/v1/batfish/topology/html` | Get interactive HTML visualization of network topology |
-| GET | `/v1/batfish/networks` | List all Batfish networks |
-| POST | `/v1/batfish/networks/{network_name}` | Set current Batfish network |
-| GET | `/v1/batfish/networks/{network_name}/snapshots` | List snapshots in a network |
-| GET | `/v1/batfish/networks/{network_name}/snapshot` | Get current snapshot |
-| POST | `/v1/batfish/networks/{network_name}/snapshot/{snapshot_name}` | Set current snapshot |
-
-### Batfish Network Management
-
-The network-discovery-mcp service provides the following endpoints for managing Batfish networks and snapshots:
-
-#### List all networks
-
-```bash
-curl -X GET http://localhost:8000/v1/batfish/networks
-```
-
-Response:
-```json
-["demo", "network1", "network2"]
-```
-
-#### Set current network
-
-```bash
-curl -X POST http://localhost:8000/v1/batfish/networks/demo
-```
-
-Response:
-```json
-{
-  "network": "demo",
-  "snapshots": ["snapshot_latest"]
-}
-```
-
-#### List snapshots in a network
-
-```bash
-curl -X GET http://localhost:8000/v1/batfish/networks/demo/snapshots
-```
-
-Response:
-```json
-["snapshot_latest", "snapshot_2025_10_22"]
-```
-
-#### Get current snapshot
-
-```bash
-curl -X GET http://localhost:8000/v1/batfish/networks/demo/snapshot
-```
-
-Response:
-```json
-{
-  "network": "demo",
-  "snapshot": "snapshot_latest",
-  "status": "success"
-}
-```
-
-#### Set current snapshot
-
-```bash
-curl -X POST http://localhost:8000/v1/batfish/networks/demo/snapshot/snapshot_2025_10_22
-```
-
-Response:
-```json
-{
-  "network": "demo",
-  "snapshot": "snapshot_2025_10_22",
-  "status": "success"
-}
-```
-
-## Model Context Protocol (MCP) Integration
-
-The network-discovery-mcp service provides a comprehensive MCP interface for seamless integration with AI agents. All network discovery capabilities are exposed as MCP tools that can be used by any MCP-compatible client.
-
-### Running in MCP Mode
-
-The service can be configured to run in MCP mode using environment variables:
-
-```bash
-# Run the container in MCP mode with HTTP transport
-docker run -p 4437:4437 -e ENABLE_MCP=true -e TRANSPORT=http network-discovery-mcp
-```
-
-Or using Docker Compose:
-
-```bash
-# Run in MCP mode
-docker-compose -f docker-compose.mcp.yml up -d
-```
-
-### MCP Tools
-
-The MCP server exposes the following tool categories:
-
-#### Seeder Tools
-- `seed_device`: Start network discovery from a seed device
-- `get_targets`: Retrieve targets collected from the seed device
-
-#### Scanner Tools
-- `scan_targets`: Scan targets for open management ports
-- `scan_from_subnets`: Scan specific subnets for open management ports
-- `add_subnets`: Add subnets to an existing scan job
-- `get_scan_results`: Get scan results for a job
-- `get_reachable_hosts`: Get only reachable hosts from scan results
-
-#### Fingerprinter Tools
-- `fingerprint_devices`: Start fingerprinting discovered devices
-- `get_fingerprint_results`: Get fingerprinting results for a job
-
-#### Config Collector Tools
-- `collect_device_configs`: Collect device configurations
-- `get_device_config`: Get configuration for a specific device
-- `update_device_config`: Update configuration for a specific device
-- `get_collection_status`: Get status of configuration collection
-
-#### Batfish Tools
-- `build_batfish_snapshot`: Build a Batfish snapshot
-- `load_batfish_snapshot`: Load a Batfish snapshot
-- `get_topology`: Get network topology in JSON format
-- `generate_topology_visualization`: Generate interactive HTML visualization of network topology
-- `list_batfish_networks`: List all Batfish networks
-- `set_batfish_network`: Set current Batfish network
-- `list_batfish_snapshots`: List snapshots in a network
-- `get_current_snapshot`: Get current snapshot
-- `set_current_snapshot`: Set current snapshot
-
-### Testing with FastMCP Inspector
-
-You can test the MCP server using the FastMCP Inspector:
-
-```bash
-# Install FastMCP Inspector
-npm install -g @presidio-federal/fastmcp-inspector
-
-# Connect to the MCP server
-fastmcp-inspector http://localhost:4437/mcp
-```
-
-The FastMCP Inspector provides a web-based interface for exploring and testing all available MCP tools.
-
-### Example MCP Workflow
-
-Here's how an AI agent would interact with the MCP server to discover and analyze a network:
-
-1. **Seed from a device**:
-   ```python
-   result = mcp.invoke("seed_device", {
-       "seed_host": "192.168.1.1",
-       "credentials": {
-           "username": "admin",
-           "password": "cisco"
-       },
-       "methods": ["interfaces", "routing", "arp", "cdp"]
-   })
-   job_id = result["job_id"]
-   ```
-
-2. **Scan discovered targets**:
-   ```python
-   result = mcp.invoke("scan_targets", {
-       "job_id": job_id,
-       "ports": [22, 443, 830],
-       "concurrency": 200
-   })
-   ```
-
-3. **Fingerprint discovered devices**:
-   ```python
-   result = mcp.invoke("fingerprint_devices", {
-       "job_id": job_id,
-       "snmp_community": "public",
-       "concurrency": 100
-   })
-   ```
-
-4. **Collect device configurations**:
-   ```python
-   result = mcp.invoke("collect_device_configs", {
-       "job_id": job_id,
-       "credentials": {
-           "username": "admin",
-           "password": "cisco"
-       },
-       "concurrency": 25
-   })
-   ```
-
-5. **Build and load Batfish snapshot**:
-   ```python
-   mcp.invoke("build_batfish_snapshot", {"job_id": job_id})
-   mcp.invoke("load_batfish_snapshot", {"job_id": job_id})
-   ```
-
-6. **Generate topology visualization**:
-   ```python
-   result = mcp.invoke("generate_topology_visualization", {"job_id": job_id})
-   topology_path = result["path"]
-   ```
-
-### MCP Configuration
-
-The MCP server can be configured using the following environment variables:
-
-- `ENABLE_MCP`: Set to `true` to enable MCP mode (default: `false`)
-- `TRANSPORT`: MCP transport type, set to `http` for HTTP transport (default: `http`)
-- `HOST`: Host to bind the server to (default: `0.0.0.0`)
-- `PORT`: Port to listen on (default: `8000`)
-- `BASE_PATH`: Base path for the MCP endpoint (default: `""`)
-
-For production deployments, the HTTP transport is recommended for integration with AI agents.
-
-#### Port Forwarding Configuration
-
-If you're running the service behind a reverse proxy or need to forward ports, use the `BASE_PATH` environment variable to ensure the MCP endpoint is correctly exposed:
-
-```bash
-# Example: Running with a base path for external port forwarding
-export BASE_PATH="/api"
-docker run -p 8000:8000 -e ENABLE_MCP=true -e BASE_PATH="$BASE_PATH" network-discovery-mcp
-```
-
-The MCP endpoint will be available at: `http://your-server:8000/api/mcp`
-
-When using with FastMCP Inspector:
-
-```bash
-fastmcp-inspector http://your-server:8000/api/mcp
-```
 
 ## Dependencies
 
