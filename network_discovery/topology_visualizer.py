@@ -325,13 +325,33 @@ def generate_topology_html(job_id: str) -> str:
         const width = window.innerWidth - 40; // Account for padding
         const height = 800;
         
-        // Add debug information at the top of the visualization
-        d3.select("#topology").append("div")
+        // Add debug information and controls at the top of the visualization
+        const topBar = d3.select("#topology").append("div")
             .style("margin-bottom", "20px")
             .style("padding", "10px")
             .style("background-color", "#f8f9fa")
             .style("border", "1px solid #ddd")
+            .style("border-radius", "4px");
+            
+        // Add controls for fixing/unfixing nodes
+        topBar.append("div")
+            .style("margin-bottom", "10px")
+            .style("padding", "10px")
+            .style("background-color", "#e9ecef")
             .style("border-radius", "4px")
+            .html(`
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div>
+                        <label for="fix-nodes-toggle" style="font-weight: bold; margin-right: 10px;">Fix Node Positions:</label>
+                        <input type="checkbox" id="fix-nodes-toggle">
+                    </div>
+                    <button id="reset-layout" style="padding: 5px 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">Reset Layout</button>
+                </div>
+                <p style="margin-top: 5px; font-size: 12px; color: #666;">Toggle to fix/unfix node positions. Drag nodes to reposition them.</p>
+            `);
+            
+        // Add debug info
+        topBar.append("div")
             .html(`
                 <h3 style="margin-top:0">Visualization Debug Info</h3>
                 <p><strong>Nodes found:</strong> ${nodes.length} (should see ${Object.keys(data.devices).length} devices)</p>
@@ -646,6 +666,46 @@ def generate_topology_html(job_id: str) -> str:
                 .attr("transform", d => `translate(${d.x},${d.y})`);
         });
         
+        // Node fixing toggle functionality
+        let nodesFixed = false;
+        
+        // Toggle checkbox event handler
+        d3.select("#fix-nodes-toggle").on("change", function() {
+            nodesFixed = this.checked;
+            
+            if (nodesFixed) {
+                // Fix all nodes in their current positions
+                nodes.forEach(node => {
+                    node.fx = node.x;
+                    node.fy = node.y;
+                });
+            } else {
+                // Unfix all nodes
+                nodes.forEach(node => {
+                    node.fx = null;
+                    node.fy = null;
+                });
+                // Restart simulation with some energy
+                simulation.alpha(0.3).restart();
+            }
+        });
+        
+        // Reset layout button
+        d3.select("#reset-layout").on("click", function() {
+            // Unfix all nodes
+            nodes.forEach(node => {
+                node.fx = null;
+                node.fy = null;
+            });
+            
+            // Reset checkbox
+            d3.select("#fix-nodes-toggle").property("checked", false);
+            nodesFixed = false;
+            
+            // Restart simulation with high energy
+            simulation.alpha(1).restart();
+        });
+        
         // Drag functions
         function dragstarted(event, d) {
             if (!event.active) simulation.alphaTarget(0.3).restart();
@@ -660,8 +720,12 @@ def generate_topology_html(job_id: str) -> str:
         
         function dragended(event, d) {
             if (!event.active) simulation.alphaTarget(0);
-            d.fx = null;
-            d.fy = null;
+            
+            // If nodes aren't fixed globally, release this node
+            if (!nodesFixed) {
+                d.fx = null;
+                d.fy = null;
+            }
         }
     </script>
 </body>
