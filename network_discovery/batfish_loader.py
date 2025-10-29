@@ -456,23 +456,24 @@ def set_current_snapshot(network_name: str, snapshot_name: str, batfish_host: st
         logger.error(f"Failed to set current snapshot: {str(e)}", exc_info=True)
         return False
 
-async def get_topology(job_id: str, batfish_host: str = "batfish") -> Dict:
+async def get_topology(network_name: str, batfish_host: str = "batfish", snapshot_name: str = "snapshot_latest") -> Dict:
     """
     Get the network topology from Batfish.
     
     Args:
-        job_id: Job identifier
+        network_name: Network name (can be a job_id)
         batfish_host: Batfish host URL
+        snapshot_name: Optional Batfish snapshot name (defaults to "snapshot_latest")
         
     Returns:
-        Dict: Topology with job_id and edges
+        Dict: Topology with network_name and edges
     """
     if not BATFISH_AVAILABLE:
         error_msg = "pybatfish module not available. Cannot get topology."
         logger.error(error_msg)
-        log_error(job_id, "batfish_loader", error_msg)
+        log_error(network_name, "batfish_loader", error_msg)
         return {
-            "job_id": job_id,
+            "network_name": network_name,
             "status": "failed",
             "error": error_msg
         }
@@ -482,7 +483,7 @@ async def get_topology(job_id: str, batfish_host: str = "batfish") -> Dict:
         os.environ["BATFISH_HOST"] = batfish_host
         
         # This is a blocking operation, run it in a thread pool
-        logger.info(f"Getting layer3 topology for job {job_id}")
+        logger.info(f"Getting layer3 topology for network {network_name}, snapshot {snapshot_name}")
         loop = asyncio.get_event_loop()
         
         # Define the function to run in the thread pool
@@ -493,10 +494,9 @@ async def get_topology(job_id: str, batfish_host: str = "batfish") -> Dict:
             
             # Explicitly set port to 9996
             bf = Session(host=host_env, port=9996)
-            bf.set_network(job_id)
+            bf.set_network(network_name)
             
             # Set the snapshot name - this is required before querying
-            snapshot_name = "snapshot_latest"
             logger.info(f"Setting snapshot to: {snapshot_name}")
             bf.set_snapshot(snapshot_name)
             
@@ -517,17 +517,19 @@ async def get_topology(job_id: str, batfish_host: str = "batfish") -> Dict:
         edges = await loop.run_in_executor(None, get_topology_data)
         
         return {
-            "job_id": job_id,
+            "network_name": network_name,
+            "snapshot_name": snapshot_name,
             "status": "success",
             "edges": edges
         }
     except Exception as e:
         error_msg = f"Failed to get topology: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        log_error(job_id, "batfish_loader", error_msg)
+        log_error(network_name, "batfish_loader", error_msg)
         
         return {
-            "job_id": job_id,
+            "network_name": network_name,
+            "snapshot_name": snapshot_name,
             "status": "failed",
             "error": str(e)
         }

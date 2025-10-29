@@ -442,14 +442,34 @@ async def load_batfish_snapshot(request: BatfishLoadRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/v1/batfish/topology", response_model=Dict)
-async def get_topology(job_id: str, batfish_host: Optional[str] = None):
+async def get_topology(job_id: str = None, network_name: str = None, snapshot_name: str = None, batfish_host: Optional[str] = None):
     """
     Get the network topology from Batfish.
     
     This endpoint returns a JSON topology of all device adjacencies.
+    
+    Args:
+        job_id: Optional job identifier (used as network name if network_name not provided)
+        network_name: Optional Batfish network name (overrides job_id if provided)
+        snapshot_name: Optional Batfish snapshot name (defaults to "snapshot_latest")
+        batfish_host: Optional Batfish host (defaults to "batfish")
     """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+    
+    if job_id is None and network_name is None:
+        raise HTTPException(status_code=400, detail="Either job_id or network_name must be provided")
+    
     try:
-        result = await get_batfish_topology(job_id, batfish_host)
+        # Use network_name if provided, otherwise use job_id
+        actual_network_name = network_name if network_name is not None else job_id
+        
+        # Get the topology using the appropriate parameters
+        result = await get_batfish_topology(
+            actual_network_name, 
+            batfish_host=batfish_host,
+            snapshot_name=snapshot_name
+        )
         
         if result.get("status") == "failed":
             raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
@@ -462,15 +482,33 @@ async def get_topology(job_id: str, batfish_host: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/v1/batfish/topology/html")
-async def get_topology_html(job_id: str):
+async def get_topology_html(job_id: str = None, network_name: str = None, snapshot_name: str = None, output_dir: str = None):
     """
     Generate and return an interactive HTML visualization of the network topology.
     
     This endpoint creates a D3.js-based force-directed graph of the network topology
     and returns it as a downloadable HTML file.
+    
+    Args:
+        job_id: Optional job identifier (used as network name if network_name not provided)
+        network_name: Optional Batfish network name (overrides job_id if provided)
+        snapshot_name: Optional Batfish snapshot name (defaults to "snapshot_latest")
+        output_dir: Optional output directory for the HTML file
     """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+    
+    if job_id is None and network_name is None:
+        raise HTTPException(status_code=400, detail="Either job_id or network_name must be provided")
+    
     try:
-        html_path = generate_topology_html(job_id)
+        # Generate the HTML using the provided parameters
+        html_path = generate_topology_html(
+            job_id=job_id, 
+            network_name=network_name, 
+            snapshot_name=snapshot_name,
+            output_dir=output_dir
+        )
         return FileResponse(html_path, media_type="text/html", filename="topology.html")
     except Exception as e:
         logger.error(f"Error in get_topology_html endpoint: {str(e)}", exc_info=True)

@@ -412,23 +412,27 @@ async def _run_batfish_snapshot_load(
         _running_tasks.pop(f"{job_id}_batfish_load", None)
 
 async def get_batfish_topology(
-    job_id: str,
-    batfish_host: Optional[str] = None
+    network_name: str,
+    batfish_host: Optional[str] = None,
+    snapshot_name: Optional[str] = None
 ) -> Dict:
     """
     Get the network topology from Batfish.
     
     Args:
-        job_id: Job identifier
+        network_name: Batfish network name (can be a job_id)
         batfish_host: Batfish host URL
+        snapshot_name: Optional Batfish snapshot name (defaults to "snapshot_latest")
         
     Returns:
-        Dict: Topology with job_id and edges
+        Dict: Topology with network_name and edges
     """
     try:
         # Use environment variable if provided, otherwise use default
         host = batfish_host or os.environ.get("BATFISH_HOST", "http://batfish:9997")
-        return await get_topology(job_id, host)
+        actual_snapshot = snapshot_name or "snapshot_latest"
+        
+        return await get_topology(network_name, host, snapshot_name=actual_snapshot)
     except Exception as e:
         logger.error(f"Batfish topology retrieval failed: {str(e)}")
-        return {"job_id": job_id, "status": "failed", "error": str(e)}
+        return {"network_name": network_name, "status": "failed", "error": str(e)}

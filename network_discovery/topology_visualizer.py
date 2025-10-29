@@ -30,34 +30,53 @@ class DateTimeEncoder(json.JSONEncoder):
             return obj.__dict__
         return super().default(obj)
 
-def generate_topology_html(job_id: str) -> str:
+def generate_topology_html(job_id: str = None, network_name: str = None, snapshot_name: str = None, output_dir: str = None) -> str:
     """
     Generate an interactive HTML visualization of the network topology.
     
     Args:
-        job_id: Job identifier
+        job_id: Job identifier (can be used as network name)
+        network_name: Optional Batfish network name (overrides job_id if provided)
+        snapshot_name: Optional Batfish snapshot name (defaults to "snapshot_latest" if not provided)
+        output_dir: Optional output directory (defaults to /artifacts/{network_name or job_id})
         
     Returns:
         str: Path to the generated HTML file
     """
     try:
-        logger.info(f"Generating topology HTML for job {job_id}")
+        # Validate input parameters
+        if job_id is None and network_name is None:
+            raise ValueError("Either job_id or network_name must be provided")
+            
+        # Determine which network name to use
+        actual_network_name = network_name if network_name is not None else job_id
+        actual_snapshot_name = snapshot_name if snapshot_name is not None else "snapshot_latest"
+        
+        logger.info(f"Generating topology HTML for network: {actual_network_name}, snapshot: {actual_snapshot_name}")
         
         # Initialize Batfish session
         logger.info("Initializing Batfish session with host: batfish on port 9996")
         bf = Session(host="batfish", port=9996)
         
-        # Set network to the job_id
-        bf.set_network(job_id)
+        # Set network
+        bf.set_network(actual_network_name)
         
         # Set the snapshot name
-        snapshot_name = "snapshot_latest"
-        logger.info(f"Setting snapshot to: {snapshot_name}")
-        bf.set_snapshot(snapshot_name)
+        logger.info(f"Setting snapshot to: {actual_snapshot_name}")
+        bf.set_snapshot(actual_snapshot_name)
         
         # Get edges using the Session API
         logger.info("Retrieving network edges from Batfish")
         edges_df = bf.q.edges().answer().frame()
+        
+        # Get detailed interface properties
+        logger.info("Retrieving interface properties from Batfish")
+        try:
+            iface_df = bf.q.interfaceProperties(properties=["Node", "Interface", "Primary_Address", "Access_VLAN", "VRF", "Description", "Active", "Switchport_Mode"]).answer().frame()
+            logger.info(f"Retrieved {len(iface_df)} interface records")
+        except Exception as e:
+            logger.warning(f"Failed to retrieve interface properties: {str(e)}")
+            iface_df = None
         
         if edges_df.empty:
             logger.warning("No edges found in the topology")
@@ -70,6 +89,38 @@ def generate_topology_html(job_id: str) -> str:
             # Create a data structure for the visualization
             devices = {}
             connections = []
+            
+            # Create a map of interfaces by node and interface name for quick lookup
+            interface_map = {}
+            if iface_df is not None:
+                for _, row in iface_df.iterrows():
+                    node = str(row.get('Node', ''))
+                    interface = str(row.get('Interface', ''))
+                    
+                    if node not in interface_map:
+                        interface_map[node] = {}
+                    
+                    # Extract IP from Primary_Address (format: x.x.x.x/yy)
+                    ip_address = None
+                    subnet_mask = None
+                    primary_addr = row.get('Primary_Address')
+                    if primary_addr and primary_addr != "AUTO/NONE(DYNAMIC)" and '/' in primary_addr:
+                        ip_parts = primary_addr.split('/')
+                        if len(ip_parts) == 2:
+                            ip_address = ip_parts[0]
+                            subnet_mask = ip_parts[1]
+                    
+                    interface_map[node][interface] = {
+                        "ip_address": ip_address,
+                        "subnet_mask": subnet_mask,
+                        "description": row.get('Description', None),
+                        "active": row.get('Active', False),
+                        "vlan": row.get('Access_VLAN', None),
+                        "vrf": row.get('VRF', 'default'),
+                        "switchport_mode": row.get('Switchport_Mode', None)
+                    }
+                
+                logger.info(f"Created interface map with {len(interface_map)} devices")
             
             # Process edges to extract devices and connections
             for _, row in edges_df.iterrows():
@@ -135,7 +186,8 @@ def generate_topology_html(job_id: str) -> str:
                             "interfaces": []
                         }
                     
-                    # Add interfaces to devices
+                    # Add interfaces to devices with enriched data from interface properties
+                    # Source interface
                     source_interface_obj = {
                         "name": source_intf,
                         "ip_address": None,
@@ -149,6 +201,32 @@ def generate_topology_html(job_id: str) -> str:
                         "secondary_ips": []
                     }
                     
+                    # Enrich with interface properties if available
+                    if interface_map and source_device in interface_map:
+                        # Find the right interface in the map
+                        # Try exact match first
+                        if source_intf in interface_map[source_device]:
+                            iface_data = interface_map[source_device][source_intf]
+                            source_interface_obj["ip_address"] = iface_data["ip_address"]
+                            source_interface_obj["subnet_mask"] = iface_data["subnet_mask"]
+                            source_interface_obj["description"] = iface_data["description"]
+                            source_interface_obj["status"] = "up" if iface_data["active"] else "down"
+                            source_interface_obj["vlan"] = iface_data["vlan"]
+                            source_interface_obj["is_trunk"] = iface_data["switchport_mode"] == "TRUNK" if iface_data["switchport_mode"] else False
+                        else:
+                            # Try to match by the interface name portion
+                            interface_name = source_intf.split('[')[-1].replace(']', '') if '[' in source_intf else source_intf
+                            for iface_key, iface_data in interface_map[source_device].items():
+                                if interface_name in iface_key:
+                                    source_interface_obj["ip_address"] = iface_data["ip_address"]
+                                    source_interface_obj["subnet_mask"] = iface_data["subnet_mask"]
+                                    source_interface_obj["description"] = iface_data["description"]
+                                    source_interface_obj["status"] = "up" if iface_data["active"] else "down"
+                                    source_interface_obj["vlan"] = iface_data["vlan"]
+                                    source_interface_obj["is_trunk"] = iface_data["switchport_mode"] == "TRUNK" if iface_data["switchport_mode"] else False
+                                    break
+                    
+                    # Target interface
                     target_interface_obj = {
                         "name": target_intf,
                         "ip_address": None,
@@ -161,6 +239,31 @@ def generate_topology_html(job_id: str) -> str:
                         "is_trunk": False,
                         "secondary_ips": []
                     }
+                    
+                    # Enrich with interface properties if available
+                    if interface_map and target_device in interface_map:
+                        # Find the right interface in the map
+                        # Try exact match first
+                        if target_intf in interface_map[target_device]:
+                            iface_data = interface_map[target_device][target_intf]
+                            target_interface_obj["ip_address"] = iface_data["ip_address"]
+                            target_interface_obj["subnet_mask"] = iface_data["subnet_mask"]
+                            target_interface_obj["description"] = iface_data["description"]
+                            target_interface_obj["status"] = "up" if iface_data["active"] else "down"
+                            target_interface_obj["vlan"] = iface_data["vlan"]
+                            target_interface_obj["is_trunk"] = iface_data["switchport_mode"] == "TRUNK" if iface_data["switchport_mode"] else False
+                        else:
+                            # Try to match by the interface name portion
+                            interface_name = target_intf.split('[')[-1].replace(']', '') if '[' in target_intf else target_intf
+                            for iface_key, iface_data in interface_map[target_device].items():
+                                if interface_name in iface_key:
+                                    target_interface_obj["ip_address"] = iface_data["ip_address"]
+                                    target_interface_obj["subnet_mask"] = iface_data["subnet_mask"]
+                                    target_interface_obj["description"] = iface_data["description"]
+                                    target_interface_obj["status"] = "up" if iface_data["active"] else "down"
+                                    target_interface_obj["vlan"] = iface_data["vlan"]
+                                    target_interface_obj["is_trunk"] = iface_data["switchport_mode"] == "TRUNK" if iface_data["switchport_mode"] else False
+                                    break
                     
                     # Check if interface already exists before adding
                     source_intf_exists = False
@@ -195,8 +298,13 @@ def generate_topology_html(job_id: str) -> str:
                 "connections": connections
             }
         
+        # Determine output directory
+        if output_dir:
+            html_dir = output_dir
+        else:
+            html_dir = f"/artifacts/{actual_network_name}"
+        
         # Ensure artifacts directory exists
-        html_dir = f"/artifacts/{job_id}"
         os.makedirs(html_dir, exist_ok=True)
         html_path = f"{html_dir}/topology.html"
         
@@ -690,6 +798,49 @@ def generate_topology_html(job_id: str) -> str:
             }
         });
         
+        // Add a button to export interface data
+        topBar.append("div")
+            .style("margin-top", "10px")
+            .html(`
+                <button id="export-interfaces" style="padding: 5px 10px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                    Export Interface Data
+                </button>
+                <span id="export-message" style="margin-left: 10px; font-size: 12px;"></span>
+            `);
+            
+        // Export interface data functionality
+        d3.select("#export-interfaces").on("click", function() {
+            try {
+                // Create a downloadable JSON file with all interface data
+                const interfaceData = {};
+                
+                // Collect all interfaces from devices
+                Object.entries(data.devices).forEach(([deviceId, device]) => {
+                    interfaceData[deviceId] = {
+                        hostname: device.hostname,
+                        interfaces: device.interfaces
+                    };
+                });
+                
+                // Create and trigger download
+                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(interfaceData, null, 2));
+                const downloadAnchorNode = document.createElement('a');
+                downloadAnchorNode.setAttribute("href", dataStr);
+                downloadAnchorNode.setAttribute("download", "network_interfaces.json");
+                document.body.appendChild(downloadAnchorNode);
+                downloadAnchorNode.click();
+                downloadAnchorNode.remove();
+                
+                d3.select("#export-message").text("Interface data exported successfully!").style("color", "green");
+                setTimeout(() => {
+                    d3.select("#export-message").text("");
+                }, 3000);
+            } catch (e) {
+                d3.select("#export-message").text("Error exporting data").style("color", "red");
+                console.error("Export error:", e);
+            }
+        });
+        
         // Reset layout button
         d3.select("#reset-layout").on("click", function() {
             // Unfix all nodes
@@ -742,7 +893,15 @@ def generate_topology_html(job_id: str) -> str:
         logger.error(f"Failed to generate topology HTML: {str(e)}", exc_info=True)
         
         # Create a simple error HTML file
-        html_dir = f"/artifacts/{job_id}"
+        if output_dir:
+            html_dir = output_dir
+        else:
+            # Use network_name or job_id for the output directory
+            dir_name = network_name if network_name is not None else job_id
+            if dir_name is None:
+                dir_name = "unknown"  # Fallback if neither is provided
+            html_dir = f"/artifacts/{dir_name}"
+            
         os.makedirs(html_dir, exist_ok=True)
         html_path = f"{html_dir}/topology.html"
         
