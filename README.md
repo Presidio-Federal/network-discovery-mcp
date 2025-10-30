@@ -205,8 +205,8 @@ The MCP server exposes tools in these categories:
 **Batfish Tools**
 - `build_batfish_snapshot`: Build a Batfish snapshot
 - `load_batfish_snapshot`: Load a Batfish snapshot
-- `get_topology`: Get network topology in JSON format
-- `generate_topology_visualization`: Generate interactive HTML visualization
+- `get_topology`: Get network topology in JSON format (supports network_name and snapshot_name)
+- `generate_topology_visualization`: Generate interactive HTML visualization (supports network_name and snapshot_name)
 
 #### Testing with FastMCP Inspector
 
@@ -254,6 +254,13 @@ mcp.invoke("load_batfish_snapshot", {"job_id": job_id})
 
 # 6. Generate topology visualization
 result = mcp.invoke("generate_topology_visualization", {"job_id": job_id})
+topology_path = result["path"]
+
+# Alternative: Generate topology from existing snapshot
+result = mcp.invoke("generate_topology_visualization", {
+    "network_name": "my_network",
+    "snapshot_name": "my_snapshot"
+})
 topology_path = result["path"]
 ```
 
@@ -347,8 +354,8 @@ All writes are atomic (`.tmp` → rename).
 | POST | `/v1/state/update/{hostname}` | Re-collect one device's state |
 | POST | `/v1/batfish/build` | Convert state JSON → .cfg snapshot |
 | POST | `/v1/batfish/load` | Load snapshot into Batfish |
-| GET | `/v1/batfish/topology` | Return Layer-3 adjacency graph in JSON format |
-| GET | `/v1/batfish/topology/html` | Generate and return interactive HTML visualization of network topology |
+| GET | `/v1/batfish/topology` | Return Layer-3 adjacency graph in JSON format (supports job_id, network_name, or snapshot_name) |
+| GET | `/v1/batfish/topology/html` | Generate and return interactive HTML visualization of network topology (supports job_id, network_name, or snapshot_name) |
 | GET | `/v1/batfish/networks` | List all networks in Batfish |
 | POST | `/v1/batfish/networks/{network_name}` | Set current network in Batfish |
 | GET | `/v1/batfish/networks/{network_name}/snapshots` | List all snapshots in a network |
@@ -440,19 +447,34 @@ The `/v1/batfish/topology/html` endpoint generates an interactive HTML visualiza
 - **Device names as node labels**: Clearly identifies each network device
 - **Interactive controls**:
   - Drag nodes to rearrange the layout
+  - Fix/unfix node positions with a toggle switch
   - Zoom in/out with mouse wheel or pinch gesture
   - Pan the view by clicking and dragging the background
   - Hover over nodes to see detailed device information
+  - Export interface data as JSON
 - **Auto-sizing**: Adapts to the browser window size
 - **Self-contained**: HTML file includes all necessary visualization code
+- **Detailed interface information**: Shows IP addresses, descriptions, and connection details
 
 ### How It Works
 
 1. The endpoint connects to Batfish using the Session API
 2. It retrieves the network topology data from `bf.q.edges().answer().frame()`
-3. Device names are extracted from interface identifiers (e.g., "Gig0/0@ROUTER-1" becomes "ROUTER-1")
-4. A D3.js force-directed graph is constructed from the node relationships
-5. The HTML is saved to `/artifacts/{job_id}/topology.html` and returned as a download
+3. It collects detailed interface properties using `bf.q.interfaceProperties()`
+4. Device names are extracted from interface identifiers (e.g., "Gig0/0@ROUTER-1" becomes "ROUTER-1")
+5. A D3.js force-directed graph is constructed from the node relationships
+6. The HTML is saved to `/artifacts/{job_id}/topology.html` and returned as a download
+
+### Using Existing Batfish Snapshots
+
+You can generate topology visualizations from any existing Batfish snapshot without running through the full discovery process:
+
+```bash
+# Generate topology from an existing Batfish snapshot
+curl -X GET "http://localhost:8000/v1/batfish/topology/html?network_name=my_network&snapshot_name=my_snapshot" -o network_topology.html
+```
+
+This is useful when you already have snapshots in Batfish and want to quickly visualize them.
 
 ### Example Usage Workflow
 
