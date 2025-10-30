@@ -7,18 +7,18 @@ services:
       - BATFISH_HOST=batfish
       - ENABLE_MCP=true
       - TRANSPORT=http
-      - PORT=8000
+      - PORT=8080
       - BASE_PATH=${BASE_PATH:-}
     volumes:
       - ./artifacts:/artifacts
     ports:
-      - "8000:8000"  # MCP port
+      - "8080:8080"
     depends_on:
       - batfish
     networks:
       - discovery-network
     healthcheck:
-      test: ["CMD-SHELL", "if [ -n \"$BASE_PATH\" ]; then curl -k -f https://localhost:8000$BASE_PATH/mcp || exit 1; else curl -k -f https://localhost:8000/mcp || exit 1; fi"]
+      test: ["CMD-SHELL", "if [ -n \"$BASE_PATH\" ]; then curl -f http://localhost:8080$BASE_PATH/mcp || exit 1; else curl -f http://localhost:8080/mcp || exit 1; fi"]
       interval: 30s
       timeout: 10s
       retries: 3
