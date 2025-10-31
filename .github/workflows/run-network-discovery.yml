@@ -53,6 +53,13 @@ jobs:
           curl -o docker-compose.mcp.yml https://raw.githubusercontent.com/Presidio-Federal/network-discovery-mcp/main/docker-compose.mcp.yml
           echo "Docker compose files downloaded successfully"
       
+      # Pull the latest container image
+      - name: Pull latest container image
+        run: |
+          echo "Pulling the latest network-discovery-mcp image..."
+          docker pull ghcr.io/presidio-federal/network-discovery-mcp:latest
+          docker image ls ghcr.io/presidio-federal/network-discovery-mcp:latest
+      
       # Step 0 - Deploy environment
       - name: Deploy network discovery environment
         run: |
@@ -64,7 +71,7 @@ jobs:
             exit 1
           fi
           
-          # Start the containers
+          # Start the containers with the locally built image
           docker compose -f ./docker-compose.yml up -d
           
           # Check if containers started
