@@ -33,12 +33,14 @@ from network_discovery.batfish_loader import (
     list_networks,
     list_snapshots,
     get_current_snapshot,
-    set_current_snapshot
+    set_current_snapshot,
+    delete_network,
+    delete_all_networks
 )
 from network_discovery.topology_visualizer import generate_topology_html
 from network_discovery.config import DEFAULT_CONCURRENCY, DEFAULT_PORTS, DEFAULT_SEEDER_METHODS
 from network_discovery.artifacts import get_job_dir, read_json
-from network_discovery.tools.get_artifact_content import get_artifact_content
+from network_discovery.tools.get_artifact_content import get_artifact_content as retrieve_artifact_content
 
 # Configure logging
 logging.basicConfig(
@@ -527,7 +529,7 @@ def create_server() -> FastMCP:
             filename: Name of the file to retrieve (e.g., topology.html, scan.json)
         """
         try:
-            response_data, _, status_code = get_artifact_content(job_id, filename)
+            response_data, _, status_code = retrieve_artifact_content(job_id, filename)
             
             if status_code != 200:
                 # Return error response
@@ -537,6 +539,54 @@ def create_server() -> FastMCP:
             return response_data
         except Exception as e:
             logger.error(f"Error in get_artifact_content tool: {str(e)}")
+            return {"error": str(e), "success": False}
+            
+    @mcp.tool
+    async def delete_batfish_network(
+        network_name: str,
+        batfish_host: str = "batfish"
+    ) -> Dict[str, Any]:
+        """Delete a specific Batfish network.
+        
+        This tool deletes a single network from Batfish.
+        
+        Args:
+            network_name: Name of the network to delete (can be a job_id)
+            batfish_host: Optional Batfish host (defaults to "batfish")
+        """
+        try:
+            success = delete_network(network_name, batfish_host)
+            if success:
+                return {
+                    "status": "success",
+                    "message": f"Network {network_name} deleted successfully"
+                }
+            else:
+                return {
+                    "status": "failed",
+                    "message": f"Failed to delete network {network_name}"
+                }
+        except Exception as e:
+            logger.error(f"Error in delete_batfish_network tool: {str(e)}")
+            return {"error": str(e), "success": False}
+            
+    @mcp.tool
+    async def clear_batfish_networks(
+        batfish_host: str = "batfish"
+    ) -> Dict[str, Any]:
+        """Delete all networks from Batfish.
+        
+        This tool deletes all networks from the Batfish server, clearing up space
+        and removing any stale or unused networks.
+        
+        Args:
+            batfish_host: Optional Batfish host (defaults to "batfish")
+        """
+        try:
+            result = delete_all_networks(batfish_host)
+            return result
+        except Exception as e:
+            logger.error(f"Error in clear_batfish_networks tool: {str(e)}")
             return {"error": str(e), "success": False}
     
     @mcp.tool

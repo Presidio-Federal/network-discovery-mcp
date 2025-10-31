@@ -423,6 +423,93 @@ def get_current_snapshot(network_name: str, batfish_host: str = "batfish") -> Op
         logger.error(f"Failed to get current snapshot: {str(e)}", exc_info=True)
         return None
 
+def delete_network(network_name: str, batfish_host: str = "batfish") -> bool:
+    """
+    Delete a network from Batfish.
+    
+    Args:
+        network_name: Network name to delete
+        batfish_host: Batfish host
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not BATFISH_AVAILABLE:
+        logger.error("pybatfish module not available. Cannot delete network.")
+        return False
+        
+    try:
+        # Initialize Batfish session
+        logger.info(f"Connecting to Batfish at {batfish_host} on port 9996")
+        bf = Session(host=batfish_host, port=9996)
+        
+        # Check if network exists
+        networks = bf.list_networks()
+        if network_name not in networks:
+            logger.warning(f"Network {network_name} not found in Batfish")
+            return False
+        
+        # Delete network
+        bf.delete_network(network_name)
+        logger.info(f"Deleted network {network_name}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete network: {str(e)}", exc_info=True)
+        return False
+
+def delete_all_networks(batfish_host: str = "batfish") -> Dict[str, Any]:
+    """
+    Delete all networks from Batfish.
+    
+    Args:
+        batfish_host: Batfish host
+        
+    Returns:
+        Dict: Result with deleted networks and status
+    """
+    if not BATFISH_AVAILABLE:
+        logger.error("pybatfish module not available. Cannot delete networks.")
+        return {"status": "failed", "error": "pybatfish module not available"}
+        
+    try:
+        # Initialize Batfish session
+        logger.info(f"Connecting to Batfish at {batfish_host} on port 9996")
+        bf = Session(host=batfish_host, port=9996)
+        
+        # Get list of networks
+        networks = bf.list_networks()
+        
+        if not networks:
+            logger.info("No networks found in Batfish")
+            return {"status": "success", "message": "No networks found", "deleted": []}
+        
+        # Delete each network
+        deleted_networks = []
+        failed_networks = []
+        
+        for network in networks:
+            try:
+                bf.delete_network(network)
+                deleted_networks.append(network)
+                logger.info(f"Deleted network {network}")
+            except Exception as e:
+                failed_networks.append({"network": network, "error": str(e)})
+                logger.error(f"Failed to delete network {network}: {str(e)}")
+        
+        result = {
+            "status": "success" if not failed_networks else "partial",
+            "deleted": deleted_networks,
+        }
+        
+        if failed_networks:
+            result["failed"] = failed_networks
+            
+        return result
+    except Exception as e:
+        logger.error(f"Failed to delete networks: {str(e)}", exc_info=True)
+        return {"status": "failed", "error": str(e)}
+
 def set_current_snapshot(network_name: str, snapshot_name: str, batfish_host: str = "batfish") -> bool:
     """
     Set the current snapshot for a network.
@@ -494,11 +581,34 @@ async def get_topology(network_name: str, batfish_host: str = "batfish", snapsho
             
             # Explicitly set port to 9996
             bf = Session(host=host_env, port=9996)
+            
+            # Check if network exists
+            networks = bf.list_networks()
+            if network_name not in networks:
+                logger.warning(f"Network {network_name} not found in Batfish")
+                return {"error": f"Network {network_name} not found in Batfish", "networks": networks}
+            
             bf.set_network(network_name)
             
+            # Check if snapshot exists
+            snapshots = bf.list_snapshots()
+            if snapshot_name not in snapshots and snapshot_name == "snapshot_latest":
+                # If snapshot_latest doesn't exist but other snapshots do, use the first one
+                if snapshots:
+                    logger.info(f"Snapshot {snapshot_name} not found, using {snapshots[0]} instead")
+                    snapshot_name_to_use = snapshots[0]
+                else:
+                    logger.warning(f"No snapshots found in network {network_name}")
+                    return {"error": f"No snapshots found in network {network_name}", "snapshots": []}
+            elif snapshot_name not in snapshots:
+                logger.warning(f"Snapshot {snapshot_name} not found in network {network_name}")
+                return {"error": f"Snapshot {snapshot_name} not found in network {network_name}", "snapshots": snapshots}
+            else:
+                snapshot_name_to_use = snapshot_name
+            
             # Set the snapshot name - this is required before querying
-            logger.info(f"Setting snapshot to: {snapshot_name}")
-            bf.set_snapshot(snapshot_name)
+            logger.info(f"Setting snapshot to: {snapshot_name_to_use}")
+            bf.set_snapshot(snapshot_name_to_use)
             
             # Get edges using the Session API
             edges_df = bf.q.edges().answer().frame()
@@ -511,16 +621,29 @@ async def get_topology(network_name: str, batfish_host: str = "batfish", snapsho
                     edges_df["Remote_Interface"] = edges_df["Remote_Interface"].apply(lambda x: str(x) if x is not None else None)
             
             # Convert to records
-            return edges_df.to_dict(orient="records")
+            return {
+                "edges": edges_df.to_dict(orient="records"),
+                "actual_snapshot": snapshot_name_to_use
+            }
         
         # Execute the function in the thread pool
-        edges = await loop.run_in_executor(None, get_topology_data)
+        result = await loop.run_in_executor(None, get_topology_data)
+        
+        # Check if there was an error
+        if "error" in result:
+            return {
+                "network_name": network_name,
+                "snapshot_name": snapshot_name,
+                "status": "failed",
+                "error": result["error"],
+                "available": result.get("snapshots", result.get("networks", []))
+            }
         
         return {
             "network_name": network_name,
-            "snapshot_name": snapshot_name,
+            "snapshot_name": result.get("actual_snapshot", snapshot_name),
             "status": "success",
-            "edges": edges
+            "edges": result["edges"]
         }
     except Exception as e:
         error_msg = f"Failed to get topology: {str(e)}"

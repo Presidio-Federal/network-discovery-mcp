@@ -37,7 +37,9 @@ from network_discovery.batfish_loader import (
     list_networks,
     list_snapshots,
     get_current_snapshot,
-    set_current_snapshot
+    set_current_snapshot,
+    delete_network,
+    delete_all_networks
 )
 from network_discovery.topology_visualizer import generate_topology_html
 from network_discovery.tools.get_artifact_content import get_artifact_content
@@ -653,6 +655,49 @@ async def set_network(network_name: str, batfish_host: str = "batfish"):
         }
     except Exception as e:
         logger.error(f"Error in set_network endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/v1/batfish/networks/{network_name}", response_model=Dict)
+async def delete_batfish_network(network_name: str, batfish_host: str = "batfish"):
+    """
+    Delete a network from Batfish.
+    
+    This endpoint deletes a network from Batfish.
+    """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+        
+    try:
+        success = delete_network(network_name, batfish_host)
+        if success:
+            return {
+                "status": "success",
+                "message": f"Network {network_name} deleted successfully"
+            }
+        else:
+            return {
+                "status": "failed",
+                "message": f"Failed to delete network {network_name}"
+            }
+    except Exception as e:
+        logger.error(f"Error in delete_batfish_network endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/v1/batfish/networks", response_model=Dict)
+async def delete_all_batfish_networks(batfish_host: str = "batfish"):
+    """
+    Delete all networks from Batfish.
+    
+    This endpoint deletes all networks from Batfish.
+    """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+        
+    try:
+        result = delete_all_networks(batfish_host)
+        return result
+    except Exception as e:
+        logger.error(f"Error in delete_all_batfish_networks endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/v1/batfish/networks/{network_name}/snapshots", response_model=List[str])

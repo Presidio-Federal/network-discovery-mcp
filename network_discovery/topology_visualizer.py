@@ -58,8 +58,28 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
         logger.info("Initializing Batfish session with host: batfish on port 9996")
         bf = Session(host="batfish", port=9996)
         
+        # Check if network exists
+        networks = bf.list_networks()
+        if actual_network_name not in networks:
+            logger.warning(f"Network {actual_network_name} not found in Batfish")
+            raise ValueError(f"Network {actual_network_name} not found in Batfish. Available networks: {networks}")
+        
         # Set network
         bf.set_network(actual_network_name)
+        
+        # Check if snapshot exists
+        snapshots = bf.list_snapshots()
+        if actual_snapshot_name not in snapshots and actual_snapshot_name == "snapshot_latest":
+            # If snapshot_latest doesn't exist but other snapshots do, use the first one
+            if snapshots:
+                logger.info(f"Snapshot {actual_snapshot_name} not found, using {snapshots[0]} instead")
+                actual_snapshot_name = snapshots[0]
+            else:
+                logger.warning(f"No snapshots found in network {actual_network_name}")
+                raise ValueError(f"No snapshots found in network {actual_network_name}")
+        elif actual_snapshot_name not in snapshots:
+            logger.warning(f"Snapshot {actual_snapshot_name} not found in network {actual_network_name}")
+            raise ValueError(f"Snapshot {actual_snapshot_name} not found in network {actual_network_name}. Available snapshots: {snapshots}")
         
         # Set the snapshot name
         logger.info(f"Setting snapshot to: {actual_snapshot_name}")
