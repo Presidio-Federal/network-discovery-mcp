@@ -16,17 +16,14 @@ RUN apt-get update && apt-get install -y \
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 
 # Install pybatfish first to ensure it's properly installed
-# Use explicit PYTHONPATH to ensure modules can be found
 ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app
 
-# Install the latest version of pybatfish with the modern Session API
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir --upgrade pybatfish && \
     python -c "import pybatfish; from pybatfish.client.session import Session; print(f'Successfully installed pybatfish {pybatfish.__version__} with client.session')"
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
-# Install dependencies first, then FastMCP with its required dependencies
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir pydantic-settings>=2.0.0 && \
     pip install --no-cache-dir fastmcp>=2.12.0 httpx>=0.25.0
@@ -60,13 +57,11 @@ RUN apt-get update && apt-get install -y \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# Generate self-signed SSL certificate
-RUN mkdir -p /certs && \
-    openssl req -x509 -nodes -days 3650 \
-      -subj "/CN=localhost" \
-      -newkey rsa:2048 \
-      -keyout /certs/server.key \
-      -out /certs/server.crt
+# --- SSL Certificates ---
+# Do NOT auto-generate self-signed certs.
+# We'll mount /certs/fullchain.pem and /certs/privkey.pem at runtime.
+RUN mkdir -p /certs
+VOLUME ["/certs"]
 
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/nginx.conf
@@ -81,14 +76,14 @@ COPY --from=build /usr/local/bin /usr/local/bin
 # Copy application code
 COPY . .
 
-# Install pybatfish and other dependencies first, then FastMCP with its required dependencies
+# Install runtime Python dependencies (ensure same versions)
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir pandas matplotlib networkx pybatfish && \
     pip install --no-cache-dir pydantic-settings>=2.0.0 && \
     pip install --no-cache-dir fastmcp>=2.12.0 httpx>=0.25.0 && \
     python -c "import pybatfish; from pybatfish.client.session import Session; print(f'Successfully installed pybatfish {pybatfish.__version__} with client.session')"
 
-# Set environment variables
+# Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV ARTIFACT_DIR=/artifacts
 ENV DEFAULT_PORTS=22,443
@@ -99,11 +94,11 @@ ENV LOG_LEVEL=info
 ENV BATFISH_HOST=batfish
 ENV HOST=0.0.0.0
 ENV PORT=8080
-ENV TRANSPORT=http
-ENV ENABLE_MCP=false
+ENV TRANSPORT=https
+ENV ENABLE_MCP=true
 
-# Expose HTTPS port
-EXPOSE 8000
+# Expose both HTTP and HTTPS ports
+EXPOSE 8080 443
 
 # Copy entrypoint script
 COPY entrypoint.sh /entrypoint.sh
@@ -111,3 +106,4 @@ RUN chmod +x /entrypoint.sh
 
 # Run both nginx and the FastMCP server
 ENTRYPOINT ["/entrypoint.sh"]
+    
