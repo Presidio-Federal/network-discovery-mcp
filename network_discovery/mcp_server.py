@@ -38,6 +38,7 @@ from network_discovery.batfish_loader import (
 from network_discovery.topology_visualizer import generate_topology_html
 from network_discovery.config import DEFAULT_CONCURRENCY, DEFAULT_PORTS, DEFAULT_SEEDER_METHODS
 from network_discovery.artifacts import get_job_dir, read_json
+from network_discovery.tools.get_artifact_content import get_artifact_content
 
 # Configure logging
 logging.basicConfig(
@@ -425,7 +426,9 @@ def create_server() -> FastMCP:
     
     @mcp.tool
     async def get_topology(
-        job_id: str,
+        job_id: Optional[str] = None,
+        network_name: Optional[str] = None,
+        snapshot_name: Optional[str] = None,
         batfish_host: Optional[str] = None
     ) -> Dict[str, Any]:
         """Get the network topology from Batfish.
@@ -433,36 +436,107 @@ def create_server() -> FastMCP:
         This tool returns a JSON topology of all device adjacencies.
         
         Args:
-            job_id: Job identifier
+            job_id: Optional job identifier (used as network name if network_name not provided)
+            network_name: Optional Batfish network name (overrides job_id if provided)
+            snapshot_name: Optional Batfish snapshot name (defaults to "snapshot_latest")
             batfish_host: Optional Batfish host URL
         """
         try:
-            result = await get_batfish_topology(job_id, batfish_host)
+            # Validate input parameters
+            if job_id is None and network_name is None:
+                return {
+                    "status": "failed",
+                    "error": "Either job_id or network_name must be provided"
+                }
+                
+            # Determine which network name to use
+            actual_network_name = network_name if network_name is not None else job_id
+            
+            # Get the topology using the appropriate parameters
+            result = await get_batfish_topology(
+                actual_network_name, 
+                batfish_host=batfish_host,
+                snapshot_name=snapshot_name
+            )
             return result
         except Exception as e:
             logger.error(f"Error in get_topology tool: {str(e)}")
             return {"error": str(e), "success": False}
     
     @mcp.tool
-    async def generate_topology_visualization(job_id: str) -> Dict[str, Any]:
+    async def generate_topology_visualization(
+        job_id: Optional[str] = None,
+        network_name: Optional[str] = None,
+        snapshot_name: Optional[str] = None,
+        output_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Generate an interactive HTML visualization of the network topology.
         
         This tool creates a D3.js-based force-directed graph of the network topology
         and returns the path to the HTML file.
         
         Args:
-            job_id: Job identifier
+            job_id: Optional job identifier (used as network name if network_name not provided)
+            network_name: Optional Batfish network name (overrides job_id if provided)
+            snapshot_name: Optional Batfish snapshot name (defaults to "snapshot_latest")
+            output_dir: Optional output directory for the HTML file
         """
         try:
-            html_path = generate_topology_html(job_id)
+            # Validate input parameters
+            if job_id is None and network_name is None:
+                return {
+                    "status": "failed",
+                    "error": "Either job_id or network_name must be provided"
+                }
+            
+            # Generate the HTML using the provided parameters
+            html_path = generate_topology_html(
+                job_id=job_id,
+                network_name=network_name,
+                snapshot_name=snapshot_name,
+                output_dir=output_dir
+            )
+            
+            # Determine which identifier to return in the response
+            identifier = network_name if network_name is not None else job_id
+            
             return {
-                "job_id": job_id,
+                "identifier": identifier,
                 "status": "success",
-                "html_path": html_path,
+                "path": html_path,
                 "message": f"Topology visualization generated at {html_path}"
             }
         except Exception as e:
             logger.error(f"Error in generate_topology_visualization tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    @mcp.tool
+    async def get_artifact_content(
+        job_id: str,
+        filename: str
+    ) -> Dict[str, Any]:
+        """Retrieve an artifact file from /artifacts/{job_id}/ and return its content.
+        
+        This tool retrieves the content of an artifact file from the job directory.
+        The response format depends on the file type:
+        - Text files (HTML, JSON, TXT) are returned as text with UTF-8 encoding
+        - Binary files are returned as base64-encoded
+        
+        Args:
+            job_id: Job identifier
+            filename: Name of the file to retrieve (e.g., topology.html, scan.json)
+        """
+        try:
+            response_data, _, status_code = get_artifact_content(job_id, filename)
+            
+            if status_code != 200:
+                # Return error response
+                return response_data
+            
+            # Return the response data (already in the correct format)
+            return response_data
+        except Exception as e:
+            logger.error(f"Error in get_artifact_content tool: {str(e)}")
             return {"error": str(e), "success": False}
     
     @mcp.tool

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Query, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from network_discovery.artifacts import get_job_dir, read_json
@@ -40,6 +40,7 @@ from network_discovery.batfish_loader import (
     set_current_snapshot
 )
 from network_discovery.topology_visualizer import generate_topology_html
+from network_discovery.tools.get_artifact_content import get_artifact_content
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -513,6 +514,34 @@ async def get_topology_html(job_id: str = None, network_name: str = None, snapsh
     except Exception as e:
         logger.error(f"Error in get_topology_html endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+# Artifact content endpoint
+@app.get("/v1/artifacts/{job_id}/{filename}")
+async def get_artifact_file(job_id: str, filename: str):
+    """
+    Retrieve an artifact file from the job directory.
+    
+    This endpoint returns the content of an artifact file from the job directory.
+    The response format depends on the file type:
+    - Text files (HTML, JSON, TXT) are returned as raw text with the appropriate MIME type
+    - Binary files are returned as base64-encoded JSON
+    
+    Args:
+        job_id: Job identifier
+        filename: Name of the file to retrieve
+    """
+    response_data, mime_type, status_code = get_artifact_content(job_id, filename)
+    
+    if status_code != 200:
+        # Return error response
+        return JSONResponse(content=response_data, status_code=status_code)
+    
+    if mime_type and mime_type != "application/json":
+        # Return raw content with appropriate MIME type
+        return Response(content=response_data["content"], media_type=mime_type)
+    
+    # Return JSON response
+    return response_data
 
 # Debug endpoints
 @app.post("/debug/routing", response_model=Dict)

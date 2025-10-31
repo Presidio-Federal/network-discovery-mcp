@@ -11,8 +11,11 @@ services:
       - BASE_PATH=${BASE_PATH:-}
     volumes:
       - ./artifacts:/artifacts
+      # - /etc/ssl/certs/fullchain.pem:/certs/fullchain.pem:ro
+      # - /etc/ssl/private/privkey.pem:/certs/privkey.pem:ro
     ports:
       - "8080:8080"
+      # - "443:443"
     depends_on:
       - batfish
     networks:

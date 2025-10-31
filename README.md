@@ -77,11 +77,35 @@ Access the API documentation at: http://localhost:8000/docs
 Run the container in MCP mode for direct AI agent integration:
 
 ```bash
-# Start both containers with MCP enabled
+# Start both containers with MCP enabled (HTTP mode)
 docker compose -f docker-compose.mcp.yml up -d
 ```
 
-Access the MCP server at: http://localhost:8000/mcp
+Access the MCP server at: http://localhost:8080/mcp
+
+##### HTTPS Support for MCP
+
+For AI agents that require HTTPS, you can mount your SSL certificates:
+
+1. Uncomment and modify these lines in `docker-compose.mcp.yml`:
+
+```yaml
+volumes:
+  - ./artifacts:/artifacts
+  - /etc/ssl/certs/fullchain.pem:/certs/fullchain.pem:ro
+  - /etc/ssl/private/privkey.pem:/certs/privkey.pem:ro
+ports:
+  - "8080:8080"
+  - "443:443"
+```
+
+2. Start the container:
+
+```bash
+docker compose -f docker-compose.mcp.yml up -d
+```
+
+The container will automatically detect your certificates and enable HTTPS on port 443. Access the MCP server at: https://localhost/mcp
 
 ### GitHub Actions Integration
 
@@ -138,10 +162,18 @@ If you prefer to run just the network discovery container:
 ```bash
 # REST API Mode
 docker pull ghcr.io/username/network-discovery-mcp:latest
-docker run -p 8000:8000 -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
+docker run -p 8080:8080 -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
 
-# MCP Mode
-docker run -p 8000:8000 -e ENABLE_MCP=true -e TRANSPORT=http -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
+# MCP Mode (HTTP)
+docker run -p 8080:8080 -e ENABLE_MCP=true -e TRANSPORT=http -e ARTIFACT_DIR=/data -v /path/to/data:/data ghcr.io/username/network-discovery-mcp:latest
+
+# MCP Mode (HTTPS with certificates)
+docker run -p 443:443 -p 8080:8080 \
+  -e ENABLE_MCP=true -e TRANSPORT=https -e ARTIFACT_DIR=/data \
+  -v /path/to/data:/data \
+  -v /etc/ssl/certs/fullchain.pem:/certs/fullchain.pem:ro \
+  -v /etc/ssl/private/privkey.pem:/certs/privkey.pem:ro \
+  ghcr.io/username/network-discovery-mcp:latest
 ```
 
 Note: Running without Batfish will disable topology visualization and analysis features.
@@ -208,6 +240,9 @@ The MCP server exposes tools in these categories:
 - `get_topology`: Get network topology in JSON format (supports network_name and snapshot_name)
 - `generate_topology_visualization`: Generate interactive HTML visualization (supports network_name and snapshot_name)
 
+**Artifact Tools**
+- `get_artifact_content`: Retrieve an artifact file from the job directory (HTML, JSON, or binary)
+
 #### Testing with FastMCP Inspector
 
 You can test the MCP server using the FastMCP Inspector:
@@ -216,8 +251,11 @@ You can test the MCP server using the FastMCP Inspector:
 # Install FastMCP Inspector
 npm install -g @presidio-federal/fastmcp-inspector
 
-# Connect to the MCP server
-fastmcp-inspector http://localhost:8000/mcp
+# Connect to HTTP MCP server
+fastmcp-inspector http://localhost:8080/mcp
+
+# OR connect to HTTPS MCP server (with self-signed certificates)
+fastmcp-inspector https://localhost/mcp --tls-no-verify
 ```
 
 #### Example MCP Workflow
@@ -262,6 +300,13 @@ result = mcp.invoke("generate_topology_visualization", {
     "snapshot_name": "my_snapshot"
 })
 topology_path = result["path"]
+
+# 7. Retrieve artifact content directly
+result = mcp.invoke("get_artifact_content", {
+    "job_id": job_id,
+    "filename": "topology.html"
+})
+html_content = result["content"]
 ```
 
 #### MCP Configuration
@@ -269,10 +314,25 @@ topology_path = result["path"]
 The MCP server can be configured using the following environment variables:
 
 - `ENABLE_MCP`: Set to `true` to enable MCP mode (default: `false`)
-- `TRANSPORT`: MCP transport type, set to `http` for HTTP transport (default: `http`)
+- `TRANSPORT`: MCP transport type, set to `http` or `https` (default: `https`)
 - `HOST`: Host to bind the server to (default: `0.0.0.0`)
-- `PORT`: Port to listen on (default: `8000`)
+- `PORT`: Port to listen on (default: `8080`)
 - `BASE_PATH`: Base path for the MCP endpoint (default: `""`)
+
+##### SSL Certificate Configuration
+
+The container automatically detects mounted SSL certificates:
+
+- If certificates are present at `/certs/fullchain.pem` and `/certs/privkey.pem`, nginx will start with HTTPS on port 443
+- If no certificates are found, the server runs in HTTP mode on port 8080
+
+You can mount your own certificates using volume mounts:
+
+```yaml
+volumes:
+  - /path/to/fullchain.pem:/certs/fullchain.pem:ro
+  - /path/to/privkey.pem:/certs/privkey.pem:ro
+```
 
 ## Architecture
 
@@ -335,6 +395,32 @@ Each run creates a job directory:
 
 All writes are atomic (`.tmp` → rename).
 
+### Artifact Retrieval
+
+The service provides direct access to artifacts through the `/v1/artifacts/{job_id}/{filename}` endpoint and the `get_artifact_content` MCP tool. This allows retrieving any file stored in the job directory:
+
+```bash
+# Retrieve the topology HTML file
+curl -X GET http://localhost:8000/v1/artifacts/demo/topology.html
+
+# Retrieve the scan results JSON file
+curl -X GET http://localhost:8000/v1/artifacts/demo/ip_scan.json
+```
+
+The response format depends on the file type:
+- Text files (HTML, JSON, TXT) are returned as raw text with the appropriate MIME type
+- Binary files are returned as base64-encoded JSON
+
+For MCP clients:
+```python
+# Retrieve artifact content
+result = mcp.invoke("get_artifact_content", {
+    "job_id": "demo",
+    "filename": "topology.html"
+})
+html_content = result["content"]
+```
+
 ## API Endpoints Reference
 
 | Method | Endpoint | Description |
@@ -356,6 +442,7 @@ All writes are atomic (`.tmp` → rename).
 | POST | `/v1/batfish/load` | Load snapshot into Batfish |
 | GET | `/v1/batfish/topology` | Return Layer-3 adjacency graph in JSON format (supports job_id, network_name, or snapshot_name) |
 | GET | `/v1/batfish/topology/html` | Generate and return interactive HTML visualization of network topology (supports job_id, network_name, or snapshot_name) |
+| GET | `/v1/artifacts/{job_id}/{filename}` | Retrieve an artifact file from the job directory (HTML, JSON, or binary) |
 | GET | `/v1/batfish/networks` | List all networks in Batfish |
 | POST | `/v1/batfish/networks/{network_name}` | Set current network in Batfish |
 | GET | `/v1/batfish/networks/{network_name}/snapshots` | List all snapshots in a network |
@@ -494,6 +581,9 @@ curl -X GET http://localhost:8000/v1/batfish/topology/html?job_id=demo -o networ
 
 # 4. Open the HTML file in any web browser
 open network_topology.html
+
+# 5. Alternatively, retrieve the topology HTML directly from artifacts
+curl -X GET http://localhost:8000/v1/artifacts/demo/topology.html > topology.html
 ```
 
 ## Environment Variables
