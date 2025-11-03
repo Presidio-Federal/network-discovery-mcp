@@ -41,6 +41,20 @@ from network_discovery.topology_visualizer import generate_topology_html
 from network_discovery.config import DEFAULT_CONCURRENCY, DEFAULT_PORTS, DEFAULT_SEEDER_METHODS
 from network_discovery.artifacts import get_job_dir, read_json
 from network_discovery.tools.get_artifact_content import get_artifact_content as retrieve_artifact_content
+from network_discovery.metrics import (
+    get_system_health,
+    get_job_statistics,
+    get_recent_jobs,
+    get_recommendations
+)
+from network_discovery.credential_validator import (
+    validate_credentials,
+    validate_credentials_batch
+)
+from network_discovery.job_resume import (
+    resume_job,
+    get_resumable_jobs
+)
 
 # Configure logging
 logging.basicConfig(
@@ -721,6 +735,329 @@ def create_server() -> FastMCP:
         except Exception as e:
             logger.error(f"Error in set_current_batfish_snapshot tool: {str(e)}")
             return {"error": str(e), "success": False}
+    
+    # === Metrics and Monitoring Tools ===
+    @mcp.tool
+    async def check_system_health() -> Dict[str, Any]:
+        """Check system health and resource availability.
+        
+        This tool provides real-time information about system resources and health status.
+        Use this before starting large scans to ensure the system is ready.
+        
+        Returns metrics for:
+        - CPU usage and availability
+        - Memory usage and availability
+        - Disk space usage
+        - Overall health status
+        - Whether the system is ready for new scans
+        """
+        try:
+            health = get_system_health()
+            return health
+        except Exception as e:
+            logger.error(f"Error in check_system_health tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    @mcp.tool
+    async def get_job_stats(job_id: str) -> Dict[str, Any]:
+        """Get detailed statistics and metrics for a specific job.
+        
+        This tool provides comprehensive information about a job's execution,
+        including module statuses, timing, and results. Use this to monitor
+        job progress and diagnose issues.
+        
+        Args:
+            job_id: Job identifier to get statistics for
+            
+        Returns:
+            Detailed job statistics including:
+            - Overall status
+            - Module statuses (seeder, scanner, fingerprinter, etc.)
+            - Scan results (reachable hosts, success rates)
+            - Fingerprinting results (identified devices, vendor breakdown)
+            - Configuration collection results
+            - Timing information
+        """
+        try:
+            stats = get_job_statistics(job_id)
+            return stats
+        except Exception as e:
+            logger.error(f"Error in get_job_stats tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    @mcp.tool
+    async def get_recent_job_history(hours: int = 24, limit: int = 50) -> Dict[str, Any]:
+        """Get statistics about recent job executions.
+        
+        This tool analyzes recent jobs to identify trends, success rates, and
+        potential issues. Use this to understand system performance over time.
+        
+        Args:
+            hours: Look back this many hours (default: 24)
+            limit: Maximum number of jobs to analyze (default: 50)
+            
+        Returns:
+            Statistics including:
+            - Total jobs in time period
+            - Completed, failed, and running job counts
+            - Success rate
+            - List of failed job IDs
+            - Overall health assessment
+        """
+        try:
+            history = get_recent_jobs(hours=hours, limit=limit)
+            return history
+        except Exception as e:
+            logger.error(f"Error in get_recent_job_history tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    @mcp.tool
+    async def get_system_recommendations() -> Dict[str, Any]:
+        """Get intelligent recommendations for optimization and troubleshooting.
+        
+        This tool analyzes system state, recent job performance, and resource
+        utilization to provide actionable recommendations. Use this to:
+        - Identify potential issues before they impact operations
+        - Get suggestions for optimization
+        - Understand system health trends
+        - Receive quick action items
+        
+        Returns:
+            Recommendations including:
+            - Warnings about resource usage or failures
+            - Optimization suggestions
+            - Quick actions to resolve issues
+            - Overall health assessment
+        """
+        try:
+            recommendations = get_recommendations()
+            return recommendations
+        except Exception as e:
+            logger.error(f"Error in get_system_recommendations tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    # === Credential Validation Tools ===
+    @mcp.tool
+    async def validate_device_credentials(
+        seed_host: str,
+        username: str,
+        password: str,
+        platform: str = "cisco_ios",
+        port: int = 22
+    ) -> Dict[str, Any]:
+        """Validate credentials against a device before starting discovery.
+        
+        This is a quick pre-check (5-15 seconds) to verify credentials work
+        BEFORE starting expensive discovery operations that could take 30+ minutes.
+        
+        Use this tool BEFORE starting network discovery to:
+        - Verify credentials are correct
+        - Detect platform mismatches early
+        - Fail fast instead of wasting time on wrong credentials
+        
+        Args:
+            seed_host: Device hostname or IP (can include port as host:port)
+            username: SSH username
+            password: SSH password
+            platform: Device platform (cisco_ios, juniper_junos, arista_eos, etc.)
+            port: SSH port (default: 22, ignored if host includes port)
+            
+        Returns:
+            Validation result:
+            {
+                "valid": true/false,
+                "latency_ms": 234,
+                "vendor": "cisco_ios",
+                "platform_correct": true,
+                "can_read_config": true,
+                "error": "..." (if failed),
+                "suggestion": "..." (if failed)
+            }
+            
+        Example Usage:
+            AI Agent: "Let me validate credentials before starting..."
+            → validate_device_credentials("192.168.1.1", "admin", "password")
+            → Result: {"valid": false, "error": "Authentication failed"}
+            AI Agent: "Invalid credentials detected. Please verify password."
+        """
+        try:
+            result = await validate_credentials(
+                host=seed_host,
+                username=username,
+                password=password,
+                platform=platform,
+                port=port
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error in validate_device_credentials tool: {str(e)}")
+            return {
+                "valid": False,
+                "error": str(e),
+                "suggestion": "Check device accessibility and network connectivity"
+            }
+    
+    @mcp.tool
+    async def validate_credentials_multiple(
+        devices: List[Dict[str, Any]],
+        username: str,
+        password: str,
+        concurrency: int = 5
+    ) -> Dict[str, Any]:
+        """Validate credentials against multiple devices in parallel.
+        
+        Useful for testing credentials against a sample of devices before
+        starting full network discovery. This helps detect credential issues
+        early across different device types or subnets.
+        
+        Args:
+            devices: List of devices, each with 'host' and optional 'platform', 'port'
+                     Example: [{"host": "192.168.1.1", "platform": "cisco_ios"}]
+            username: SSH username
+            password: SSH password
+            concurrency: Max parallel validations (default: 5)
+            
+        Returns:
+            Batch validation results:
+            {
+                "total_devices": 5,
+                "valid_count": 4,
+                "invalid_count": 1,
+                "success_rate": 0.800,
+                "results": [per-device validation results]
+            }
+            
+        Example Usage:
+            AI Agent: "Testing credentials against 5 sample devices..."
+            → validate_credentials_multiple([...], "admin", "password")
+            → Result: success_rate 0.200 (only 20% worked)
+            AI Agent: "Credentials work on only 1/5 devices. May be wrong for most devices."
+        """
+        try:
+            result = await validate_credentials_batch(
+                devices=devices,
+                username=username,
+                password=password,
+                concurrency=concurrency
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error in validate_credentials_multiple tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    # === Job Resume Tools ===
+    @mcp.tool
+    async def resume_failed_job(
+        job_id: str,
+        phase: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        platform: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Resume a failed or partial job without re-doing completed work.
+        
+        This is CRITICAL for large network discovery - if a job fails after
+        scanning 500 devices and collecting 200 configs, you can resume and
+        only retry the failed portions instead of starting over.
+        
+        The tool intelligently:
+        - Detects what phases completed successfully
+        - Skips completed work
+        - Retries only failed or incomplete phases
+        - Preserves all successful results
+        
+        Args:
+            job_id: Job identifier to resume
+            phase: Specific phase to resume from (optional, auto-detects if not provided)
+                   Options: "scanner", "fingerprinter", "config_collector"
+            username: SSH username (required if resuming config collection)
+            password: SSH password (required if resuming config collection)
+            platform: Device platform (optional, default: cisco_ios)
+            
+        Returns:
+            Resume results:
+            {
+                "job_id": str,
+                "status": "completed",
+                "resumed_from": "config_collector",
+                "phases_executed": ["config_collector"],
+                "summary": {
+                    "config_collector": {
+                        "success_count": 200,
+                        "failed_count": 50
+                    }
+                }
+            }
+            
+        Example Usage:
+            Scenario: Job collected 200/450 configs then failed
+            
+            AI Agent: "Job failed during config collection. Let me resume..."
+            → resume_failed_job(job_id, username="admin", password="pwd")
+            → Only retries the 250 failed devices
+            AI Agent: "Resumed collection. Now have 425/450 configs (95% success)."
+        """
+        try:
+            # Build credentials dict if provided
+            credentials = None
+            if username and password:
+                credentials = {
+                    "username": username,
+                    "password": password,
+                    "platform": platform or "cisco_ios"
+                }
+            
+            result = await resume_job(
+                job_id=job_id,
+                phase=phase,
+                credentials=credentials
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error in resume_failed_job tool: {str(e)}")
+            return {
+                "job_id": job_id,
+                "status": "error",
+                "error": str(e)
+            }
+    
+    @mcp.tool
+    async def list_resumable_jobs() -> Dict[str, Any]:
+        """Get list of jobs that can be resumed.
+        
+        This tool scans all jobs and identifies which ones failed or
+        are incomplete and can be resumed. Useful for AI agents to
+        proactively offer to resume failed jobs.
+        
+        Returns:
+            List of resumable jobs:
+            {
+                "resumable_jobs": [
+                    {
+                        "job_id": "net-disc-123",
+                        "failed_phases": ["config_collector"],
+                        "can_resume_from": "config_collector",
+                        "completed_phases": ["seeder", "scanner", "fingerprinter"],
+                        "failed_at": "2025-11-02T12:34:56Z"
+                    }
+                ],
+                "count": 1
+            }
+            
+        Example Usage:
+            AI Agent: "Checking for any failed jobs that can be resumed..."
+            → list_resumable_jobs()
+            → Result: 1 resumable job found
+            AI Agent: "I found a failed job from earlier. It completed scanning 
+                      and fingerprinting but failed during config collection. 
+                      Would you like me to resume it?"
+        """
+        try:
+            result = await get_resumable_jobs()
+            return result
+        except Exception as e:
+            logger.error(f"Error in list_resumable_jobs tool: {str(e)}")
+            return {"error": str(e), "resumable_jobs": [], "count": 0}
     
     return mcp
 

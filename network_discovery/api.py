@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from network_discovery.artifacts import get_job_dir, read_json
 from network_discovery.config import DEFAULT_CONCURRENCY, DEFAULT_PORTS, DEFAULT_SEEDER_METHODS
@@ -55,11 +55,93 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# Health check endpoints
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint.
+    
+    Returns basic service health status.
+    """
+    return {
+        "status": "healthy",
+        "service": "network-discovery",
+        "version": "0.1.0"
+    }
+
+@app.get("/ready")
+async def readiness_check():
+    """
+    Readiness check endpoint.
+    
+    Checks if the service is ready to accept requests by validating:
+    - Artifact directory is writable
+    - Batfish is available (if enabled)
+    """
+    checks = {
+        "artifact_dir": False,
+        "batfish": None
+    }
+    
+    # Check artifact directory
+    try:
+        from network_discovery.config import ARTIFACT_DIR
+        artifact_path = Path(ARTIFACT_DIR)
+        artifact_path.mkdir(parents=True, exist_ok=True)
+        
+        # Try to write a test file
+        test_file = artifact_path / ".health_check"
+        test_file.write_text("ok")
+        test_file.unlink()
+        checks["artifact_dir"] = True
+    except Exception as e:
+        logger.error(f"Artifact directory check failed: {str(e)}")
+        checks["artifact_dir"] = False
+    
+    # Check Batfish availability
+    try:
+        from network_discovery.batfish_loader import BATFISH_AVAILABLE
+        checks["batfish"] = BATFISH_AVAILABLE
+    except Exception as e:
+        logger.warning(f"Batfish availability check failed: {str(e)}")
+        checks["batfish"] = False
+    
+    # Service is ready if artifact_dir is accessible
+    # Batfish is optional
+    is_ready = checks["artifact_dir"]
+    
+    if is_ready:
+        return {
+            "status": "ready",
+            "checks": checks
+        }
+    else:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "checks": checks
+            }
+        )
+
 # Pydantic models for request validation
 class Credentials(BaseModel):
     username: str
-    password: str
+    password: SecretStr
     platform: str = "cisco_ios"
+    
+    class Config:
+        json_encoders = {
+            SecretStr: lambda v: "***MASKED***" if v else None
+        }
+    
+    def get_dict_with_secrets(self) -> dict:
+        """Get dictionary with actual password values for internal use only."""
+        return {
+            "username": self.username,
+            "password": self.password.get_secret_value(),
+            "platform": self.platform
+        }
 
 class SeedRequest(BaseModel):
     seed_host: str
@@ -123,7 +205,7 @@ async def seed_device(request: SeedRequest):
     try:
         result = await start_seeder(
             request.seed_host,
-            request.credentials.dict(),
+            request.credentials.get_dict_with_secrets(),
             request.job_id,
             request.methods
         )
@@ -343,7 +425,7 @@ async def collect_device_states(request: StateCollectorRequest):
     try:
         result = await start_state_collector(
             request.job_id,
-            request.credentials.dict(),
+            request.credentials.get_dict_with_secrets(),
             request.concurrency
         )
         return result
@@ -405,8 +487,8 @@ async def update_device_state(hostname: str, request: DeviceStateUpdateRequest):
     try:
         result = await start_device_state_update(
             request.job_id,
-            request.credentials.dict(),
-            hostname
+            hostname,
+            request.credentials.get_dict_with_secrets()
         )
         return result
     except Exception as e:
