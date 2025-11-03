@@ -719,6 +719,11 @@ def _parse_raw_routing_table(route_output: str) -> List[Dict]:
                         if '/' not in full_network:
                             logger.debug(f"No subnet info available for {network}, using as is")
                     
+                    # Skip default routes - don't scan the entire internet!
+                    if full_network in ["0.0.0.0/0", "::/0"]:
+                        logger.info(f"Skipping default route: {full_network}")
+                        continue
+                    
                     # Log the route we're adding
                     logger.debug(f"Adding route: {protocol} {full_network} via {next_hop or 'direct'}")
                     
@@ -794,6 +799,11 @@ def _parse_via_routes(route_output: str) -> List[Dict]:
                 if part == "via" and i+1 < len(parts):
                     next_hop = parts[i+1].rstrip(',')
                     break
+            
+            # Skip default routes - don't scan the entire internet!
+            if network in ["0.0.0.0/0", "::/0"]:
+                logger.debug(f"Skipping default route: {network}")
+                continue
             
             if network and next_hop:
                 routes.append({
