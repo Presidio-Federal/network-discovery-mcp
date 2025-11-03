@@ -630,9 +630,9 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
             .attr("stroke", "#333")
             .attr("stroke-width", 2)
             .attr("fill", d => {
-                if (d.discovery_status === 'discovered') return "#69b3a2";
-                if (d.discovery_status === 'failed') return "#ff7f7f";
-                if (d.discovery_status === 'unreachable') return "#cccccc";
+                if (d.status === 'discovered') return "#69b3a2";
+                if (d.status === 'failed') return "#ff7f7f";
+                if (d.status === 'unreachable') return "#cccccc";
                 return "#b8b8b8";
             });
             
@@ -763,7 +763,7 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                         <div><strong>Type:</strong></div>
                         <div>${d.device_type || 'Unknown'}</div>
                         <div><strong>Status:</strong></div>
-                        <div>${d.discovery_status || 'Unknown'}</div>
+                        <div>${d.status || 'Unknown'}</div>
                     </div>
                     ${neighborList}
                     ${interfaceList}
