@@ -39,6 +39,7 @@ from network_discovery.config import (
     DEFAULT_PORTS,
     get_job_dir,
 )
+from network_discovery.utils import retry_with_backoff, with_timeout
 
 # Configure logger with more detailed format
 logger = logging.getLogger(__name__)
@@ -540,7 +541,7 @@ async def _scan_ip_with_semaphore(ip: str, ports: List[int], semaphore: asyncio.
 
 async def _scan_ip(ip: str, ports: List[int]) -> Dict:
     """
-    Scan an IP for open ports.
+    Scan an IP for open ports in parallel.
     
     Args:
         ip: IP address to scan
@@ -549,15 +550,26 @@ async def _scan_ip(ip: str, ports: List[int]) -> Dict:
     Returns:
         Dict: Scan results for the IP
     """
-    logger.debug(f"Scanning IP {ip} for {len(ports)} ports")
+    logger.debug(f"Scanning IP {ip} for {len(ports)} ports in parallel")
     start_time = time.time()
+    
+    # Check all ports in parallel
+    port_check_tasks = [_check_port(ip, port) for port in ports]
+    port_check_results = await asyncio.gather(*port_check_tasks, return_exceptions=True)
+    
+    # Process results
     port_results = {}
     banner = None
     open_ports = 0
     
-    # Check each port
-    for port in ports:
-        is_open, port_banner = await _check_port(ip, port)
+    for port, result in zip(ports, port_check_results):
+        # Handle exceptions from port checks
+        if isinstance(result, Exception):
+            logger.debug(f"Port check failed for {ip}:{port}: {str(result)}")
+            port_results[str(port)] = "closed"
+            continue
+        
+        is_open, port_banner = result
         port_results[str(port)] = "open" if is_open else "closed"
         
         if is_open:
@@ -569,9 +581,9 @@ async def _scan_ip(ip: str, ports: List[int]) -> Dict:
                 banner = port_banner
                 logger.debug(f"Captured banner from {ip}:{port} - {banner}")
     
-    # Calculate latency
+    # Calculate latency (average per port, but they ran in parallel)
     scan_duration = time.time() - start_time
-    latency_ms = int(scan_duration * 1000 / len(ports))
+    latency_ms = int(scan_duration * 1000)  # Total time for parallel scan
     
     # Build result
     is_reachable = any(status == "open" for status in port_results.values())
@@ -586,10 +598,11 @@ async def _scan_ip(ip: str, ports: List[int]) -> Dict:
         result["banner"] = banner
     
     status = "reachable" if is_reachable else "unreachable"
-    logger.debug(f"IP {ip} scan completed in {scan_duration:.3f}s - {status} with {open_ports} open ports")
+    logger.debug(f"IP {ip} parallel scan completed in {scan_duration:.3f}s - {status} with {open_ports}/{len(ports)} open ports")
     
     return result
 
+@retry_with_backoff(max_attempts=2, initial_delay=0.5, max_delay=2.0)
 async def _check_port(ip: str, port: int) -> Tuple[bool, Optional[str]]:
     """
     Check if a port is open and get a banner if available.
@@ -607,9 +620,10 @@ async def _check_port(ip: str, port: int) -> Tuple[bool, Optional[str]]:
         start_time = time.time()
         
         try:
-            reader, writer = await asyncio.wait_for(
+            reader, writer = await with_timeout(
                 asyncio.open_connection(ip, port),
-                timeout=CONNECT_TIMEOUT
+                timeout=CONNECT_TIMEOUT,
+                error_message=f"Connection to {ip}:{port} timed out"
             )
             connection_time = time.time() - start_time
             logger.debug(f"Connection to {ip}:{port} successful in {connection_time:.3f}s")

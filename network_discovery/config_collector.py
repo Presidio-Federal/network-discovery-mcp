@@ -31,6 +31,7 @@ from network_discovery.artifacts import (
     update_status,
 )
 from network_discovery.config import DEFAULT_CONCURRENCY
+from network_discovery.utils import retry_with_backoff, with_timeout
 
 # Configure logger with more detailed format
 logger = logging.getLogger(__name__)
@@ -776,6 +777,7 @@ async def _collect_device_config(
                 "elapsed_time": f"{elapsed_time:.2f}s"
             }
 
+@retry_with_backoff(max_attempts=3, initial_delay=2.0, max_delay=10.0)
 async def _collect_via_ssh(ip: str, creds: Dict, vendor: str) -> str:
     """
     Collect configuration via SSH.
@@ -807,15 +809,21 @@ async def _collect_via_ssh(ip: str, creds: Dict, vendor: str) -> str:
     try:
         logger.debug(f"Establishing SSH connection to {host}:{port}")
         
-        # Connect via AsyncSSH
-        async with asyncssh.connect(
-            host=host,
-            port=port,
-            username=creds.get("username"),
-            password=creds.get("password"),
-            known_hosts=None,
-            connect_timeout=30
-        ) as conn:
+        # Connect via AsyncSSH with timeout
+        conn = await with_timeout(
+            asyncssh.connect(
+                host=host,
+                port=port,
+                username=creds.get("username"),
+                password=creds.get("password"),
+                known_hosts=None,
+                connect_timeout=30
+            ),
+            timeout=35,
+            error_message=f"SSH connection to {host}:{port} timed out"
+        )
+        
+        async with conn:
             connection_time = time.time() - start_time
             logger.debug(f"SSH connection established to {host}:{port} in {connection_time:.2f}s")
             
