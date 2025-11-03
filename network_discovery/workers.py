@@ -282,22 +282,22 @@ async def start_state_collector(
 
 async def start_device_state_update(
     job_id: str,
-    creds: Dict,
-    hostname: str
+    hostname: str,
+    creds: Dict
 ) -> Dict:
     """
     Start a task to update a single device's state.
     
     Args:
         job_id: Job identifier
-        creds: Dictionary with authentication credentials
         hostname: Device hostname or IP
+        creds: Dictionary with authentication credentials
         
     Returns:
         Dict: Task information with job_id and status
     """
     # Create and start the task
-    task = asyncio.create_task(_run_device_state_update(job_id, creds, hostname))
+    task = asyncio.create_task(_run_device_state_update(job_id, hostname, creds))
     _running_tasks[f"{job_id}_device_update_{hostname}"] = task
     
     return {
@@ -323,8 +323,8 @@ async def _run_state_collector(
 
 async def _run_device_state_update(
     job_id: str,
-    creds: Dict,
-    hostname: str
+    hostname: str,
+    creds: Dict
 ) -> Dict:
     """Run the device state update function."""
     try:

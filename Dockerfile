@@ -3,21 +3,22 @@ FROM python:3.11-slim AS build
 
 WORKDIR /app
 
-# Install system dependencies for Python builds and network tools
-RUN apt-get update && apt-get install -y \
+# Install system dependencies for Python builds ONLY
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     build-essential \
     python3-dev \
     git \
-    default-jre \
+    default-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up Java environment
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 
-# Install pybatfish first to ensure it's properly installed
+# Set Python path
 ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages:/app
 
+# Install pybatfish first to ensure it's properly installed
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir --upgrade pybatfish && \
     python -c "import pybatfish; from pybatfish.client.session import Session; print(f'Successfully installed pybatfish {pybatfish.__version__} with client.session')"
@@ -33,33 +34,23 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install lightweight runtime dependencies including nginx and openssl
-RUN apt-get update && apt-get install -y \
+# Install ONLY runtime dependencies (no build tools!)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     iputils-ping \
-    traceroute \
-    nmap \
     fping \
-    netcat-openbsd \
-    snmp \
-    snmpd \
-    sshpass \
     curl \
-    telnet \
     dnsutils \
     net-tools \
     iproute2 \
-    default-jre \
-    gcc \
-    build-essential \
-    python3-dev \
+    default-jre-headless \
     nginx \
     openssl \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# --- SSL Certificates ---
-# Do NOT auto-generate self-signed certs.
-# We'll mount /certs/fullchain.pem and /certs/privkey.pem at runtime.
+# SSL Certificates - mount at runtime
 RUN mkdir -p /certs
 VOLUME ["/certs"]
 
@@ -75,13 +66,6 @@ COPY --from=build /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY . .
-
-# Install runtime Python dependencies (ensure same versions)
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir pandas matplotlib networkx pybatfish && \
-    pip install --no-cache-dir pydantic-settings>=2.0.0 && \
-    pip install --no-cache-dir fastmcp>=2.12.0 httpx>=0.25.0 && \
-    python -c "import pybatfish; from pybatfish.client.session import Session; print(f'Successfully installed pybatfish {pybatfish.__version__} with client.session')"
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
@@ -106,4 +90,3 @@ RUN chmod +x /entrypoint.sh
 
 # Run both nginx and the FastMCP server
 ENTRYPOINT ["/entrypoint.sh"]
-    
