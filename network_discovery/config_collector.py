@@ -863,12 +863,16 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str) -> str:
         loop = asyncio.get_event_loop()
         
         def _netmiko_collect():
+            # Use enable_secret if provided, otherwise fall back to password
+            enable_password = creds.get("enable_secret", creds.get("password"))
+            
             device_params = {
                 'device_type': device_type,
                 'host': host,
                 'port': port,
                 'username': creds.get("username"),
                 'password': creds.get("password"),
+                'secret': enable_password,  # Enable password
                 'timeout': 30,
                 'session_timeout': 60,
                 'banner_timeout': 15,
@@ -876,9 +880,21 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str) -> str:
             }
             
             with ConnectHandler(**device_params) as net_connect:
+                # Try to enter enable mode (privileged EXEC mode)
+                # This is required for most config commands on Cisco/Arista
+                try:
+                    if not net_connect.check_enable_mode():
+                        logger.debug(f"Not in enable mode on {host}, attempting to enter enable mode")
+                        net_connect.enable()
+                        logger.debug(f"Successfully entered enable mode on {host}")
+                    else:
+                        logger.debug(f"Already in enable mode on {host}")
+                except Exception as e:
+                    # Some devices don't need enable mode or it's already enabled
+                    logger.debug(f"Enable mode not needed or already enabled on {host}: {str(e)}")
+                
                 # Netmiko automatically handles:
                 # - Terminal length 0 (disable paging)
-                # - Enable mode (if needed)
                 # - Timing and prompts
                 config = net_connect.send_command(command, read_timeout=90)
                 return config

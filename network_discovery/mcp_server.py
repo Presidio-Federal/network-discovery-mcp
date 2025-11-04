@@ -364,6 +364,7 @@ def create_server() -> FastMCP:
         job_id: str,
         username: str,
         password: str,
+        enable_secret: Optional[str] = None,
         concurrency: int = 25
     ) -> Dict[str, Any]:
         """Collect device configurations using fingerprint data.
@@ -379,7 +380,8 @@ def create_server() -> FastMCP:
            - Arista: "show running-config"
            - Juniper: "show configuration | display set"
            - Palo Alto: "show config running"
-        3. Saves configurations to state files
+        3. Automatically enters enable mode for Cisco/Arista if needed
+        4. Saves configurations to state files
         
         **Note:** Platform detection is automatic from fingerprints.
         If you need to correct vendor identification first, run the
@@ -389,6 +391,7 @@ def create_server() -> FastMCP:
             job_id: Job identifier
             username: Username for SSH authentication
             password: Password for SSH authentication
+            enable_secret: Enable password (optional, defaults to password if not provided)
             concurrency: Number of concurrent operations (default: 25)
             
         Returns:
@@ -405,6 +408,8 @@ def create_server() -> FastMCP:
                 "username": username,
                 "password": password
             }
+            if enable_secret:
+                credentials["enable_secret"] = enable_secret
             
             result = await start_state_collector(
                 job_id,

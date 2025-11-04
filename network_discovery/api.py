@@ -130,6 +130,7 @@ class Credentials(BaseModel):
     username: str
     password: SecretStr
     platform: Optional[str] = None  # Optional: uses fingerprint data if not provided
+    enable_secret: Optional[SecretStr] = None  # Optional: enable password (defaults to password if not provided)
     
     class Config:
         json_encoders = {
@@ -138,11 +139,14 @@ class Credentials(BaseModel):
     
     def get_dict_with_secrets(self) -> dict:
         """Get dictionary with actual password values for internal use only."""
-        return {
+        result = {
             "username": self.username,
             "password": self.password.get_secret_value(),
             "platform": self.platform
         }
+        if self.enable_secret:
+            result["enable_secret"] = self.enable_secret.get_secret_value()
+        return result
 
 class SeedRequest(BaseModel):
     seed_host: str
