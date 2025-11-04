@@ -14,6 +14,8 @@ from datetime import datetime, date
 
 from pybatfish.client.session import Session
 
+from network_discovery.artifacts import get_fingerprints_path, get_reachable_path, read_json
+
 # Configure logger
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,65 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
         # Set the snapshot name
         logger.info(f"Setting snapshot to: {actual_snapshot_name}")
         bf.set_snapshot(actual_snapshot_name)
+        
+        # Load fingerprints and reachable devices to get actual device data
+        device_info_map = {}
+        try:
+            if job_id or actual_network_name:
+                job_identifier = job_id if job_id else actual_network_name
+                
+                # Try to load fingerprints
+                try:
+                    fingerprints_path = get_fingerprints_path(job_identifier)
+                    fingerprints = read_json(fingerprints_path)
+                    
+                    if fingerprints and "hosts" in fingerprints:
+                        for host in fingerprints["hosts"]:
+                            hostname = host.get("hostname", host.get("ip", "unknown"))
+                            inference = host.get("inference", {})
+                            
+                            device_info_map[hostname] = {
+                                "ip_address": host.get("ip"),
+                                "platform": inference.get("vendor", "unknown"),
+                                "vendor": inference.get("vendor", "unknown"),
+                                "model": inference.get("model", "unknown"),
+                                "confidence": inference.get("confidence", 0.0),
+                                "protocols": inference.get("protocols", [])
+                            }
+                            logger.debug(f"Loaded device info for {hostname}: vendor={inference.get('vendor')}")
+                    
+                    logger.info(f"Loaded {len(device_info_map)} devices from fingerprints")
+                except Exception as e:
+                    logger.warning(f"Could not load fingerprints: {str(e)}")
+                
+                # Try to load reachable devices for additional info
+                try:
+                    reachable_path = get_reachable_path(job_identifier)
+                    reachable = read_json(reachable_path)
+                    
+                    if reachable and "reachable" in reachable:
+                        for device in reachable["reachable"]:
+                            hostname = device.get("hostname", device.get("ip", "unknown"))
+                            if hostname in device_info_map:
+                                # Update with additional info from reachable
+                                device_info_map[hostname]["discovery_status"] = "discovered"
+                            else:
+                                # Add device from reachable if not in fingerprints
+                                device_info_map[hostname] = {
+                                    "ip_address": device.get("ip"),
+                                    "platform": "unknown",
+                                    "vendor": "unknown",
+                                    "model": "unknown",
+                                    "confidence": 0.0,
+                                    "protocols": [],
+                                    "discovery_status": "discovered"
+                                }
+                    
+                    logger.info(f"Device info map now has {len(device_info_map)} devices after reachable")
+                except Exception as e:
+                    logger.warning(f"Could not load reachable devices: {str(e)}")
+        except Exception as e:
+            logger.warning(f"Error loading device info: {str(e)}")
         
         # Get edges using the Session API
         logger.info("Retrieving network edges from Batfish")
@@ -165,8 +226,11 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                     
                     # Add devices to the dictionary if they don't exist
                     if source_device not in devices:
-                        # Try to determine device type from hostname
-                        device_type = "cisco_xe"  # Default
+                        # Get actual device info from fingerprints/reachable
+                        device_info = device_info_map.get(source_device, {})
+                        
+                        # Try to determine device type from hostname if not in device_info
+                        device_type = "unknown"
                         if "switch" in source_device.lower():
                             device_type = "switch"
                         elif "router" in source_device.lower():
@@ -175,19 +239,26 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                             device_type = "router"
                         elif "edge" in source_device.lower():
                             device_type = "router"
+                        else:
+                            device_type = "cisco_xe"  # Default
                             
                         devices[source_device] = {
                             "hostname": source_device,
-                            "ip_address": source_device,  # Use hostname as IP if we don't have real IP
-                            "platform": "cisco",  # Default platform
+                            "ip_address": device_info.get("ip_address", source_device),
+                            "platform": device_info.get("vendor", "unknown"),
+                            "vendor": device_info.get("vendor", "unknown"),
+                            "model": device_info.get("model", "unknown"),
                             "device_type": device_type,
-                            "discovery_status": "discovered",
+                            "discovery_status": device_info.get("discovery_status", "discovered"),
                             "interfaces": []
                         }
                     
                     if target_device not in devices:
-                        # Try to determine device type from hostname
-                        device_type = "cisco_xe"  # Default
+                        # Get actual device info from fingerprints/reachable
+                        device_info = device_info_map.get(target_device, {})
+                        
+                        # Try to determine device type from hostname if not in device_info
+                        device_type = "unknown"
                         if "switch" in target_device.lower():
                             device_type = "switch"
                         elif "router" in target_device.lower():
@@ -196,36 +267,41 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                             device_type = "router"
                         elif "edge" in target_device.lower():
                             device_type = "router"
+                        else:
+                            device_type = "cisco_xe"  # Default
                             
                         devices[target_device] = {
                             "hostname": target_device,
-                            "ip_address": target_device,  # Use hostname as IP if we don't have real IP
-                            "platform": "cisco",  # Default platform
+                            "ip_address": device_info.get("ip_address", target_device),
+                            "platform": device_info.get("vendor", "unknown"),
+                            "vendor": device_info.get("vendor", "unknown"),
+                            "model": device_info.get("model", "unknown"),
                             "device_type": device_type,
-                            "discovery_status": "discovered",
+                            "discovery_status": device_info.get("discovery_status", "discovered"),
                             "interfaces": []
                         }
                     
                     # Add interfaces to devices with enriched data from interface properties
+                    # Extract clean interface names first
+                    clean_source_intf = source_intf.split('[')[-1].replace(']', '') if '[' in source_intf else source_intf
+                    clean_target_intf = target_intf.split('[')[-1].replace(']', '') if '[' in target_intf else target_intf
+                    
                     # Source interface
                     source_interface_obj = {
-                        "name": source_intf,
+                        "name": clean_source_intf,  # Use clean name
                         "ip_address": None,
                         "subnet_mask": None,
                         "mac_address": None,
                         "description": None,
                         "status": "up",
                         "vlan": None,
-                        "connected_to": f"{target_device}:{target_intf}",
+                        "connected_to": f"{target_device}:{clean_target_intf}",  # Use clean names
                         "is_trunk": False,
                         "secondary_ips": []
                     }
                     
                     # Enrich with interface properties if available
                     if interface_map and source_device in interface_map:
-                        # Extract clean interface name from the edge format
-                        # Edge format can be: "hai-branch[GigabitEthernet2]" or "GigabitEthernet2"
-                        clean_source_intf = source_intf.split('[')[-1].replace(']', '') if '[' in source_intf else source_intf
                         logger.debug(f"Looking up interface '{clean_source_intf}' for device '{source_device}'")
                         logger.debug(f"Available interfaces for {source_device}: {list(interface_map[source_device].keys())}")
                         
@@ -258,23 +334,20 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                     
                     # Target interface
                     target_interface_obj = {
-                        "name": target_intf,
+                        "name": clean_target_intf,  # Use clean name
                         "ip_address": None,
                         "subnet_mask": None,
                         "mac_address": None,
                         "description": None,
                         "status": "up",
                         "vlan": None,
-                        "connected_to": f"{source_device}:{source_intf}",
+                        "connected_to": f"{source_device}:{clean_source_intf}",  # Use clean names
                         "is_trunk": False,
                         "secondary_ips": []
                     }
                     
                     # Enrich with interface properties if available
                     if interface_map and target_device in interface_map:
-                        # Extract clean interface name from the edge format
-                        # Edge format can be: "hai-core-01[GigabitEthernet5]" or "GigabitEthernet5"
-                        clean_target_intf = target_intf.split('[')[-1].replace(']', '') if '[' in target_intf else target_intf
                         logger.debug(f"Looking up interface '{clean_target_intf}' for device '{target_device}'")
                         
                         # Try exact match first
@@ -307,13 +380,13 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                     # Check if interface already exists before adding
                     source_intf_exists = False
                     for intf in devices[source_device]["interfaces"]:
-                        if intf["name"] == source_intf:
+                        if intf["name"] == clean_source_intf:
                             source_intf_exists = True
                             break
                     
                     target_intf_exists = False
                     for intf in devices[target_device]["interfaces"]:
-                        if intf["name"] == target_intf:
+                        if intf["name"] == clean_target_intf:
                             target_intf_exists = True
                             break
                     
@@ -323,12 +396,12 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                     if not target_intf_exists:
                         devices[target_device]["interfaces"].append(target_interface_obj)
                     
-                    # Add connection
+                    # Add connection with clean interface names
                     connections.append({
                         "source": source_device,
                         "target": target_device,
-                        "source_port": source_intf,
-                        "target_port": target_intf
+                        "source_port": clean_source_intf,
+                        "target_port": clean_target_intf
                     })
             
             # Create the final topology data structure

@@ -98,7 +98,15 @@ def create_server() -> FastMCP:
             password: Password for authentication
             platform: Device platform (default: cisco_ios)
             job_id: Optional job identifier (generated if not provided)
-            methods: Collection methods to use (default: all available methods)
+            methods: Optional collection methods (default: ["interfaces", "routing", "arp", "cdp", "lldp"])
+        
+        Returns:
+            {
+                "job_id": "...",
+                "status": "completed",
+                "targets_found": 42,
+                "device_state": {...}
+            }
         """
         try:
             # Use default methods if not specified
@@ -138,8 +146,16 @@ def create_server() -> FastMCP:
         Args:
             job_id: Job identifier
             targets_path: Optional path to targets file
-            ports: Ports to scan (default: 22, 23, 80, 443)
+            ports: Optional ports to scan (default: [22, 443])
             concurrency: Number of concurrent scans (default: 100)
+        
+        Returns:
+            {
+                "job_id": "...",
+                "status": "completed",
+                "reachable_count": 15,
+                "unreachable_count": 3
+            }
         """
         try:
             # Use default ports if not specified
@@ -169,10 +185,18 @@ def create_server() -> FastMCP:
         This tool scans IPs from explicitly provided subnets for open management ports.
         
         Args:
-            subnets: List of subnets to scan (CIDR notation)
+            subnets: List of subnets to scan (CIDR notation, e.g., ["10.0.0.0/24", "192.168.1.0/24"])
             job_id: Optional job identifier (generated if not provided)
-            ports: Ports to scan (default: 22, 23, 80, 443)
+            ports: Optional ports to scan (default: [22, 443])
             concurrency: Number of concurrent scans (default: 100)
+        
+        Returns:
+            {
+                "job_id": "...",
+                "status": "completed",
+                "reachable_count": 42,
+                "unreachable_count": 210
+            }
         """
         try:
             # Generate job_id if not provided
