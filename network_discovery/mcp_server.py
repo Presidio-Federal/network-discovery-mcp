@@ -364,26 +364,46 @@ def create_server() -> FastMCP:
         job_id: str,
         username: str,
         password: str,
-        platform: str = "cisco_ios",
         concurrency: int = 25
     ) -> Dict[str, Any]:
-        """Collect device configurations.
+        """Collect device configurations using fingerprint data.
         
         This tool retrieves device configurations from all reachable devices
-        and stores them in state files.
+        and stores them in state files. The system automatically uses vendor
+        information from the fingerprinting phase to select the correct commands.
+        
+        **How it works:**
+        1. Reads fingerprints to determine each device's vendor
+        2. Uses vendor-specific commands automatically:
+           - Cisco: "show running-config"
+           - Arista: "show running-config"
+           - Juniper: "show configuration | display set"
+           - Palo Alto: "show config running"
+        3. Saves configurations to state files
+        
+        **Note:** Platform detection is automatic from fingerprints.
+        If you need to correct vendor identification first, run the
+        deep_fingerprint_devices tool before this.
         
         Args:
             job_id: Job identifier
-            username: Username for authentication
-            password: Password for authentication
-            platform: Device platform (default: cisco_ios)
+            username: Username for SSH authentication
+            password: Password for SSH authentication
             concurrency: Number of concurrent operations (default: 25)
+            
+        Returns:
+            {
+                "job_id": "...",
+                "status": "completed",
+                "device_count": 42,
+                "success_count": 38,
+                "failed_count": 4
+            }
         """
         try:
             credentials = {
                 "username": username,
-                "password": password,
-                "platform": platform
+                "password": password
             }
             
             result = await start_state_collector(

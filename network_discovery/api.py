@@ -129,7 +129,7 @@ async def readiness_check():
 class Credentials(BaseModel):
     username: str
     password: SecretStr
-    platform: str = "cisco_ios"
+    platform: Optional[str] = None  # Optional: uses fingerprint data if not provided
     
     class Config:
         json_encoders = {

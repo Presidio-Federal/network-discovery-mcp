@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Set
 
 import asyncssh
-import netmiko
+from netmiko import ConnectHandler
+from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
 from ncclient import manager
 import requests
 
@@ -60,6 +61,16 @@ CONFIG_COMMANDS = {
 
 # Default command if vendor is unknown
 DEFAULT_CONFIG_COMMAND = "show running-config"
+
+# Map our vendor names to Netmiko device types
+VENDOR_TO_NETMIKO_TYPE = {
+    "Cisco": "cisco_ios",  # Works for IOS, IOS-XE
+    "Arista": "arista_eos",
+    "Juniper": "juniper_junos",
+    "Palo Alto": "paloalto_panos",
+    "Fortinet": "fortinet",
+    "Huawei": "huawei",
+}
 
 def extract_hostname_from_config(config: str, vendor: str, default_hostname: str) -> str:
     """
@@ -661,14 +672,36 @@ async def _collect_device_config(
             
             # Try SSH first if available
             if "ssh" in protocols:
-                try:
-                    logger.info(f"Attempting SSH collection for {hostname} ({ip})")
-                    config = await _collect_via_ssh(ip, creds, vendor)
-                    protocol_used = "ssh"
-                    logger.info(f"SSH collection successful for {hostname} ({ip})")
-                except Exception as e:
-                    logger.warning(f"SSH collection failed for {hostname} ({ip}): {str(e)}")
-                    logger.debug(traceback.format_exc())
+                # Try Netmiko first for supported vendors (handles vendor quirks)
+                if vendor in VENDOR_TO_NETMIKO_TYPE:
+                    try:
+                        logger.info(f"Attempting Netmiko (SSH) collection for {hostname} ({ip}) vendor={vendor}")
+                        config = await _collect_via_netmiko(ip, creds, vendor)
+                        protocol_used = "ssh_netmiko"
+                        logger.info(f"Netmiko collection successful for {hostname} ({ip})")
+                    except Exception as e:
+                        logger.warning(f"Netmiko collection failed for {hostname} ({ip}): {str(e)}")
+                        logger.debug(traceback.format_exc())
+                        
+                        # Fall back to raw AsyncSSH
+                        try:
+                            logger.info(f"Falling back to raw AsyncSSH for {hostname} ({ip})")
+                            config = await _collect_via_ssh(ip, creds, vendor)
+                            protocol_used = "ssh_asyncssh"
+                            logger.info(f"AsyncSSH collection successful for {hostname} ({ip})")
+                        except Exception as e2:
+                            logger.warning(f"AsyncSSH collection also failed for {hostname} ({ip}): {str(e2)}")
+                            logger.debug(traceback.format_exc())
+                else:
+                    # Vendor not in Netmiko mapping, use AsyncSSH directly
+                    try:
+                        logger.info(f"Attempting AsyncSSH collection for {hostname} ({ip}) vendor={vendor}")
+                        config = await _collect_via_ssh(ip, creds, vendor)
+                        protocol_used = "ssh_asyncssh"
+                        logger.info(f"AsyncSSH collection successful for {hostname} ({ip})")
+                    except Exception as e:
+                        logger.warning(f"AsyncSSH collection failed for {hostname} ({ip}): {str(e)}")
+                        logger.debug(traceback.format_exc())
             
             # Try NETCONF if SSH failed and it's supported
             if not config and vendor in ["Juniper", "Cisco"]:
@@ -786,6 +819,97 @@ async def _collect_device_config(
                 "error": str(e),
                 "elapsed_time": f"{elapsed_time:.2f}s"
             }
+
+async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str) -> str:
+    """
+    Collect configuration via Netmiko (handles vendor-specific quirks).
+    
+    Netmiko is better than raw AsyncSSH because it:
+    - Handles terminal paging automatically
+    - Manages enable mode for privilege escalation
+    - Deals with vendor-specific prompts and timing
+    - Has built-in error handling for each platform
+    
+    Args:
+        ip: Device IP address
+        creds: Authentication credentials
+        vendor: Device vendor (from fingerprinting)
+        
+    Returns:
+        str: Device configuration
+    """
+    start_time = time.time()
+    
+    # Parse IP and port
+    if ":" in ip:
+        host, port = ip.split(":", 1)
+        port = int(port)
+    else:
+        host = ip
+        port = 22
+    
+    # Get Netmiko device type
+    device_type = VENDOR_TO_NETMIKO_TYPE.get(vendor)
+    if not device_type:
+        raise Exception(f"Vendor '{vendor}' not supported by Netmiko. Supported vendors: {list(VENDOR_TO_NETMIKO_TYPE.keys())}")
+    
+    # Get the command for this vendor
+    command = CONFIG_COMMANDS.get(vendor, DEFAULT_CONFIG_COMMAND)
+    
+    logger.debug(f"Attempting Netmiko connection to {host}:{port} as device_type='{device_type}'")
+    
+    try:
+        # Run Netmiko in thread pool since it's synchronous
+        loop = asyncio.get_event_loop()
+        
+        def _netmiko_collect():
+            device_params = {
+                'device_type': device_type,
+                'host': host,
+                'port': port,
+                'username': creds.get("username"),
+                'password': creds.get("password"),
+                'timeout': 30,
+                'session_timeout': 60,
+                'banner_timeout': 15,
+                'conn_timeout': 30,
+            }
+            
+            with ConnectHandler(**device_params) as net_connect:
+                # Netmiko automatically handles:
+                # - Terminal length 0 (disable paging)
+                # - Enable mode (if needed)
+                # - Timing and prompts
+                config = net_connect.send_command(command, read_timeout=90)
+                return config
+        
+        # Run in executor to avoid blocking
+        config = await loop.run_in_executor(None, _netmiko_collect)
+        
+        elapsed_time = time.time() - start_time
+        config_length = len(config)
+        logger.debug(f"Netmiko collection from {host} completed in {elapsed_time:.2f}s, config size: {config_length} bytes")
+        
+        if config_length < 100:
+            logger.warning(f"Config from {host} is suspiciously small ({config_length} bytes)")
+        
+        return config
+        
+    except NetmikoAuthenticationException as e:
+        elapsed_time = time.time() - start_time
+        error_msg = f"Authentication failed to {host}:{port} after {elapsed_time:.2f}s: {str(e)}"
+        logger.error(error_msg)
+        raise Exception(error_msg)
+    except NetmikoTimeoutException as e:
+        elapsed_time = time.time() - start_time
+        error_msg = f"Connection timeout to {host}:{port} after {elapsed_time:.2f}s: {str(e)}"
+        logger.error(error_msg)
+        raise Exception(error_msg)
+    except Exception as e:
+        elapsed_time = time.time() - start_time
+        error_msg = f"Netmiko collection from {host}:{port} failed after {elapsed_time:.2f}s: {str(e)}"
+        logger.error(error_msg)
+        raise Exception(error_msg)
 
 async def _collect_via_ssh(ip: str, creds: Dict, vendor: str) -> str:
     """
