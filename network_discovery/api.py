@@ -18,6 +18,7 @@ from network_discovery.artifacts import get_job_dir, read_json
 from network_discovery.config import DEFAULT_CONCURRENCY, DEFAULT_PORTS, DEFAULT_SEEDER_METHODS
 from network_discovery.scanner import get_scan, get_reachable_hosts
 from network_discovery.fingerprinter import get_fingerprints
+from network_discovery.deep_fingerprinter import deep_fingerprint_job
 from network_discovery.direct_connect import direct_collect_routing
 from network_discovery.workers import (
     start_add_subnets,
@@ -168,6 +169,12 @@ class AddSubnetsRequest(BaseModel):
 class FingerprintRequest(BaseModel):
     job_id: str
     snmp_community: Optional[str] = None
+    concurrency: int = DEFAULT_CONCURRENCY
+
+class DeepFingerprintRequest(BaseModel):
+    job_id: str
+    credentials: Credentials
+    confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0, description="Re-fingerprint devices below this confidence threshold")
     concurrency: int = DEFAULT_CONCURRENCY
     
 class StateCollectorRequest(BaseModel):
@@ -412,6 +419,76 @@ async def get_fingerprint_results(job_id: str):
         raise
     except Exception as e:
         logger.error(f"Error in get_fingerprint endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/fingerprint/deep", response_model=Dict)
+async def deep_fingerprint_devices(request: DeepFingerprintRequest):
+    """
+    Perform deep fingerprinting on low-confidence or unknown devices.
+    
+    This endpoint authenticates to devices that couldn't be reliably identified
+    through passive methods (SSH banners, HTTPS, SNMP) and runs 'show version'
+    to determine the actual device type.
+    
+    **When to use this:**
+    - After regular fingerprinting shows devices as "Linux/Unix" or "unknown"
+    - When confidence scores are low (< 0.6)
+    - When you need accurate vendor detection for config collection
+    
+    **What it does:**
+    1. Identifies devices with low confidence or unknown vendor
+    2. Authenticates via SSH using provided credentials
+    3. Runs 'show version' command
+    4. Updates fingerprints with detected OS information
+    
+    **Example scenario:**
+    - Arista devices show as "Linux/Unix" (SSH banner: OpenSSH_8.7)
+    - Deep fingerprint logs in, runs 'show version'
+    - Detects "Arista EOS" and updates fingerprints
+    - Config collection now knows it's Arista
+    
+    **Example request:**
+    ```json
+    {
+      "job_id": "net-disc-123",
+      "credentials": {
+        "username": "admin",
+        "password": "password"
+      },
+      "confidence_threshold": 0.6,
+      "concurrency": 50
+    }
+    ```
+    
+    **Response:**
+    ```json
+    {
+      "job_id": "net-disc-123",
+      "status": "completed",
+      "devices_checked": 5,
+      "devices_updated": 3,
+      "devices_failed": 2
+    }
+    ```
+    """
+    try:
+        creds = request.credentials.get_dict_with_secrets()
+        
+        result = await deep_fingerprint_job(
+            request.job_id,
+            creds,
+            request.confidence_threshold,
+            request.concurrency
+        )
+        
+        if result.get("status") == "failed":
+            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in deep_fingerprint endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/v1/state/collect", response_model=Dict)

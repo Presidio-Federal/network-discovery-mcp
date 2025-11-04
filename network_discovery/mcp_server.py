@@ -28,6 +28,7 @@ from network_discovery.workers import (
 )
 from network_discovery.scanner import get_scan, get_reachable_hosts
 from network_discovery.fingerprinter import get_fingerprints
+from network_discovery.deep_fingerprinter import deep_fingerprint_job
 from network_discovery.config_collector import get_device_state, get_collection_status
 from network_discovery.batfish_loader import (
     list_networks,
@@ -291,6 +292,70 @@ def create_server() -> FastMCP:
             return result
         except Exception as e:
             logger.error(f"Error in get_fingerprint_results tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    @mcp.tool
+    async def deep_fingerprint_devices(
+        job_id: str,
+        username: str,
+        password: str,
+        confidence_threshold: float = 0.6,
+        concurrency: int = DEFAULT_CONCURRENCY
+    ) -> Dict[str, Any]:
+        """Perform deep fingerprinting on low-confidence or unknown devices.
+        
+        This tool authenticates to devices that couldn't be reliably identified
+        through passive methods (SSH banners, HTTPS, SNMP) and runs 'show version'
+        to determine the actual device type.
+        
+        **When to use this:**
+        - After regular fingerprinting shows devices as "Linux/Unix" or "unknown"
+        - When confidence scores are low (< 0.6)
+        - When you need accurate vendor detection for config collection
+        
+        **What it does:**
+        1. Identifies devices with low confidence or unknown vendor
+        2. Authenticates via SSH using provided credentials
+        3. Runs 'show version' command
+        4. Updates fingerprints with detected OS information
+        
+        **Example scenario:**
+        - Arista devices show as "Linux/Unix" (SSH banner: OpenSSH_8.7)
+        - Deep fingerprint logs in, runs 'show version'
+        - Detects "Arista EOS" and updates fingerprints
+        - Config collection now knows it's Arista
+        
+        Args:
+            job_id: Job identifier
+            username: SSH username
+            password: SSH password
+            confidence_threshold: Re-fingerprint devices below this confidence (default: 0.6)
+            concurrency: Number of concurrent connections (default: 100)
+            
+        Returns:
+            {
+                "job_id": "net-disc-123",
+                "status": "completed",
+                "devices_checked": 5,
+                "devices_updated": 3,
+                "devices_failed": 2
+            }
+        """
+        try:
+            creds = {
+                "username": username,
+                "password": password
+            }
+            
+            result = await deep_fingerprint_job(
+                job_id,
+                creds,
+                confidence_threshold,
+                concurrency
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error in deep_fingerprint_devices tool: {str(e)}")
             return {"error": str(e), "success": False}
     
     # === Config Collector Tools ===

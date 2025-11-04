@@ -82,7 +82,7 @@ Step 1 — Seed Discovery
 - Verify completion by polling /v1/status/{job_id} until status is "completed".
 - Output: targets.json (initial list of discovered IPs and subnets).
 
-2. Network Scan:
+Step 2 - Network Scan:
   - Use the same job_id returned from the Seeder step.
   - Execute the Scanner capability to probe the discovered targets:
       ports: [22, 443]              # Default ports, configurable
@@ -133,12 +133,24 @@ Step 6 — Load Snapshot into Batfish
 - Verify success by calling /v1/batfish/topology?job_id={job_id}.
 - Output: confirmation that snapshot loaded successfully.
 
-Step 7 — Generate Topology
-- Query Batfish for the network topology using /v1/batfish/topology?job_id={job_id}.
-- Immediately afterward, call /v1/batfish/topology/html?job_id={job_id} to retrieve the rendered topology map.
-- Save the resulting HTML file under /artifacts/{job_id}/topology.html.
+Step 7 - Generate Topology:
+  - Query Batfish for the network topology:
+      endpoint: /v1/batfish/topology?job_id={job_id}
+  - Immediately afterward, retrieve the rendered topology HTML visualization:
+      endpoint: /v1/batfish/topology/html?job_id={job_id}
+  - The agent must **always** capture and save both representations automatically:
+      - Save JSON topology to `/network_discovery/<job_id>/topology.json`
+      - Save HTML visualization to `/network_discovery/<job_id>/topology.html`
+  - These files are required outputs; skipping or waiting for user prompt is not allowed.
+  - After saving, confirm both files exist on disk.
+    - If missing, retry retrieval up to two times.
+    - On persistent failure, log error details to `/network_discovery/<job_id>/error.json`
+      and continue marking topology as "partial".
+  - Log message after success:
+      "Topology generation and visualization successfully captured."
 
-Step 9 — Reporting and Output
+
+Step 8 — Reporting and Output
 - Construct a structured JSON summary with key metrics:
 {
   "job_id": "<uuid>",

@@ -1,0 +1,319 @@
+"""
+Deep fingerprinting module for authenticated device identification.
+
+This module performs authenticated fingerprinting on devices that couldn't be
+reliably identified through passive methods (SSH banners, HTTPS, SNMP).
+It logs in and runs vendor-agnostic commands to determine the actual device type.
+"""
+
+import asyncio
+import logging
+import re
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import asyncssh
+
+from network_discovery.artifacts import (
+    atomic_write_json,
+    get_job_dir,
+    log_error,
+    read_json,
+    update_status,
+)
+from network_discovery.config import DEFAULT_CONCURRENCY
+
+logger = logging.getLogger(__name__)
+
+# OS detection patterns (same as config_collector but for fingerprinting)
+OS_DETECTION_PATTERNS = {
+    "show version": {
+        # Cisco IOS/IOS-XE
+        r"Cisco IOS Software": {"vendor": "Cisco", "model": "IOS"},
+        r"Cisco IOS XE Software": {"vendor": "Cisco", "model": "IOS-XE"},
+        r"Cisco Nexus Operating System": {"vendor": "Cisco", "model": "NX-OS"},
+        r"Cisco Adaptive Security Appliance": {"vendor": "Cisco", "model": "ASA"},
+        
+        # Arista EOS
+        r"Arista .* EOS": {"vendor": "Arista", "model": "EOS"},
+        r"Arista vEOS": {"vendor": "Arista", "model": "EOS"},
+        
+        # Juniper JUNOS
+        r"JUNOS": {"vendor": "Juniper", "model": "JUNOS"},
+        r"Juniper Networks": {"vendor": "Juniper", "model": "JUNOS"},
+        
+        # Palo Alto PAN-OS
+        r"PAN-OS": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        
+        # Fortinet
+        r"FortiGate": {"vendor": "Fortinet", "model": "FortiOS"},
+        
+        # Huawei
+        r"Huawei Versatile Routing Platform": {"vendor": "Huawei", "model": "VRP"},
+        r"HUAWEI": {"vendor": "Huawei", "model": "VRP"},
+    }
+}
+
+
+async def deep_fingerprint_job(
+    job_id: str,
+    creds: Dict,
+    confidence_threshold: float = 0.6,
+    concurrency: int = DEFAULT_CONCURRENCY
+) -> Dict:
+    """
+    Perform deep fingerprinting on low-confidence devices.
+    
+    This function:
+    1. Reads existing fingerprints
+    2. Identifies devices with confidence below threshold or vendor="unknown"
+    3. Authenticates and runs 'show version' to detect actual OS
+    4. Updates fingerprints with corrected information
+    
+    Args:
+        job_id: Job identifier
+        creds: Authentication credentials
+        confidence_threshold: Re-fingerprint devices below this confidence (default: 0.6)
+        concurrency: Maximum concurrent connections
+        
+    Returns:
+        Dict: Deep fingerprinting results
+    """
+    try:
+        logger.info(f"Starting deep fingerprinting for job {job_id}")
+        
+        # Read existing fingerprints
+        fingerprints_path = get_fingerprints_path(job_id)
+        fingerprints = read_json(fingerprints_path)
+        
+        if not fingerprints or "hosts" not in fingerprints:
+            error_msg = f"No fingerprints found for job {job_id}"
+            logger.error(error_msg)
+            return {
+                "job_id": job_id,
+                "status": "failed",
+                "error": error_msg
+            }
+        
+        # Find devices that need deep fingerprinting
+        candidates = []
+        for host in fingerprints["hosts"]:
+            inference = host.get("inference", {})
+            confidence = inference.get("confidence", 0.0)
+            vendor = inference.get("vendor", "unknown")
+            
+            # Check if device needs deep fingerprinting
+            needs_deep_fp = (
+                vendor == "unknown" or 
+                vendor == "Linux/Unix" or  # Generic OpenSSH devices
+                confidence < confidence_threshold
+            )
+            
+            if needs_deep_fp and host.get("ip"):
+                candidates.append({
+                    "ip": host["ip"],
+                    "current_vendor": vendor,
+                    "current_confidence": confidence,
+                    "evidence": host.get("evidence", {})
+                })
+        
+        logger.info(f"Found {len(candidates)} devices needing deep fingerprinting")
+        
+        if not candidates:
+            return {
+                "job_id": job_id,
+                "status": "completed",
+                "message": "No devices need deep fingerprinting",
+                "devices_checked": 0,
+                "devices_updated": 0
+            }
+        
+        # Update status
+        update_status(
+            job_id,
+            "deep_fingerprinter",
+            "running",
+            candidates_count=len(candidates),
+            started_at=datetime.utcnow().isoformat() + "Z"
+        )
+        
+        # Deep fingerprint devices in parallel
+        semaphore = asyncio.Semaphore(concurrency)
+        tasks = [
+            _deep_fingerprint_device(device, creds, semaphore)
+            for device in candidates
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results and update fingerprints
+        updated_count = 0
+        failed_count = 0
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Deep fingerprint failed for {candidates[i]['ip']}: {str(result)}")
+                failed_count += 1
+                continue
+            
+            if result.get("detected"):
+                # Update the host in fingerprints
+                ip = candidates[i]["ip"]
+                for host in fingerprints["hosts"]:
+                    if host["ip"] == ip:
+                        # Update inference with detected information
+                        host["inference"].update({
+                            "vendor": result["vendor"],
+                            "model": result["model"],
+                            "confidence": 1.0,  # High confidence from authenticated detection
+                            "detection_method": "deep_fingerprint"
+                        })
+                        # Keep evidence for audit trail
+                        host["evidence"]["deep_fingerprint"] = result.get("version_output", "")[:500]
+                        updated_count += 1
+                        logger.info(f"Updated {ip}: {result['vendor']} {result['model']}")
+                        break
+        
+        # Save updated fingerprints
+        atomic_write_json(fingerprints, fingerprints_path)
+        
+        # Update status
+        update_status(
+            job_id,
+            "deep_fingerprinter",
+            "completed",
+            devices_checked=len(candidates),
+            devices_updated=updated_count,
+            devices_failed=failed_count,
+            completed_at=datetime.utcnow().isoformat() + "Z"
+        )
+        
+        return {
+            "job_id": job_id,
+            "status": "completed",
+            "devices_checked": len(candidates),
+            "devices_updated": updated_count,
+            "devices_failed": failed_count,
+            "fingerprints_path": str(fingerprints_path)
+        }
+        
+    except Exception as e:
+        error_msg = f"Deep fingerprinting failed: {str(e)}"
+        logger.error(error_msg)
+        log_error(job_id, "deep_fingerprinter", error_msg)
+        
+        update_status(
+            job_id,
+            "deep_fingerprinter",
+            "failed",
+            error=str(e),
+            completed_at=datetime.utcnow().isoformat() + "Z"
+        )
+        
+        return {
+            "job_id": job_id,
+            "status": "failed",
+            "error": str(e)
+        }
+
+
+async def _deep_fingerprint_device(
+    device: Dict,
+    creds: Dict,
+    semaphore: asyncio.Semaphore
+) -> Dict:
+    """
+    Deep fingerprint a single device via authentication.
+    
+    Args:
+        device: Device information
+        creds: Authentication credentials
+        semaphore: Concurrency semaphore
+        
+    Returns:
+        Dict: Detection results
+    """
+    async with semaphore:
+        ip = device["ip"]
+        
+        try:
+            logger.debug(f"Deep fingerprinting {ip}")
+            
+            # Parse IP and port
+            if ":" in ip:
+                host, port = ip.split(":", 1)
+                port = int(port)
+            else:
+                host = ip
+                port = 22
+            
+            # Connect via SSH
+            conn = await asyncio.wait_for(
+                asyncssh.connect(
+                    host=host,
+                    port=port,
+                    username=creds.get("username"),
+                    password=creds.get("password"),
+                    known_hosts=None,
+                    connect_timeout=10
+                ),
+                timeout=15
+            )
+            
+            async with conn:
+                # Try 'show version' command
+                result = await asyncio.wait_for(
+                    conn.run("show version"),
+                    timeout=10
+                )
+                
+                if result.exit_status == 0:
+                    output = result.stdout
+                    
+                    # Match against patterns
+                    for pattern, info in OS_DETECTION_PATTERNS["show version"].items():
+                        if re.search(pattern, output, re.IGNORECASE | re.MULTILINE):
+                            logger.info(f"Detected {ip} as {info['vendor']} {info.get('model', 'unknown')}")
+                            return {
+                                "ip": ip,
+                                "detected": True,
+                                "vendor": info["vendor"],
+                                "model": info.get("model", "unknown"),
+                                "version_output": output[:1000],  # First 1000 chars for evidence
+                                "method": "show_version"
+                            }
+                
+                logger.debug(f"No pattern matched for {ip} in show version output")
+                return {
+                    "ip": ip,
+                    "detected": False,
+                    "reason": "No matching pattern in show version"
+                }
+                
+        except asyncssh.Error as e:
+            logger.debug(f"SSH failed for {ip}: {str(e)}")
+            return {
+                "ip": ip,
+                "detected": False,
+                "reason": f"SSH authentication failed: {str(e)}"
+            }
+        except asyncio.TimeoutError:
+            logger.debug(f"Timeout connecting to {ip}")
+            return {
+                "ip": ip,
+                "detected": False,
+                "reason": "Connection timeout"
+            }
+        except Exception as e:
+            logger.debug(f"Deep fingerprint failed for {ip}: {str(e)}")
+            return {
+                "ip": ip,
+                "detected": False,
+                "reason": str(e)
+            }
+
+
+def get_fingerprints_path(job_id: str):
+    """Get path to fingerprints file."""
+    return get_job_dir(job_id) / "fingerprints.json"
+
