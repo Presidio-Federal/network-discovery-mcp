@@ -14,7 +14,8 @@ from datetime import datetime, date
 
 from pybatfish.client.session import Session
 
-from network_discovery.artifacts import get_fingerprints_path, get_reachable_path, read_json
+from network_discovery.fingerprinter import get_fingerprints_path
+from network_discovery.artifacts import get_reachable_hosts_path, read_json
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                 
                 # Try to load reachable devices for additional info
                 try:
-                    reachable_path = get_reachable_path(job_identifier)
+                    reachable_path = get_reachable_hosts_path(job_identifier)
                     reachable = read_json(reachable_path)
                     
                     if reachable and "reachable" in reachable:
