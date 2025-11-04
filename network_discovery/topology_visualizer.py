@@ -223,28 +223,38 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                     
                     # Enrich with interface properties if available
                     if interface_map and source_device in interface_map:
-                        # Find the right interface in the map
+                        # Extract clean interface name from the edge format
+                        # Edge format can be: "hai-branch[GigabitEthernet2]" or "GigabitEthernet2"
+                        clean_source_intf = source_intf.split('[')[-1].replace(']', '') if '[' in source_intf else source_intf
+                        logger.debug(f"Looking up interface '{clean_source_intf}' for device '{source_device}'")
+                        logger.debug(f"Available interfaces for {source_device}: {list(interface_map[source_device].keys())}")
+                        
                         # Try exact match first
-                        if source_intf in interface_map[source_device]:
-                            iface_data = interface_map[source_device][source_intf]
+                        if clean_source_intf in interface_map[source_device]:
+                            iface_data = interface_map[source_device][clean_source_intf]
                             source_interface_obj["ip_address"] = iface_data["ip_address"]
                             source_interface_obj["subnet_mask"] = iface_data["subnet_mask"]
                             source_interface_obj["description"] = iface_data["description"]
                             source_interface_obj["status"] = "up" if iface_data["active"] else "down"
                             source_interface_obj["vlan"] = iface_data["vlan"]
                             source_interface_obj["is_trunk"] = iface_data["switchport_mode"] == "TRUNK" if iface_data["switchport_mode"] else False
+                            logger.debug(f"Matched interface {clean_source_intf} with IP {iface_data['ip_address']}")
                         else:
-                            # Try to match by the interface name portion
-                            interface_name = source_intf.split('[')[-1].replace(']', '') if '[' in source_intf else source_intf
+                            # Try fuzzy match by checking if the interface name contains the key
+                            matched = False
                             for iface_key, iface_data in interface_map[source_device].items():
-                                if interface_name in iface_key:
+                                if clean_source_intf in iface_key or iface_key in clean_source_intf:
                                     source_interface_obj["ip_address"] = iface_data["ip_address"]
                                     source_interface_obj["subnet_mask"] = iface_data["subnet_mask"]
                                     source_interface_obj["description"] = iface_data["description"]
                                     source_interface_obj["status"] = "up" if iface_data["active"] else "down"
                                     source_interface_obj["vlan"] = iface_data["vlan"]
                                     source_interface_obj["is_trunk"] = iface_data["switchport_mode"] == "TRUNK" if iface_data["switchport_mode"] else False
+                                    logger.debug(f"Fuzzy matched interface {clean_source_intf} to {iface_key} with IP {iface_data['ip_address']}")
+                                    matched = True
                                     break
+                            if not matched:
+                                logger.warning(f"No match found for interface {clean_source_intf} on device {source_device}")
                     
                     # Target interface
                     target_interface_obj = {
@@ -262,28 +272,37 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                     
                     # Enrich with interface properties if available
                     if interface_map and target_device in interface_map:
-                        # Find the right interface in the map
+                        # Extract clean interface name from the edge format
+                        # Edge format can be: "hai-core-01[GigabitEthernet5]" or "GigabitEthernet5"
+                        clean_target_intf = target_intf.split('[')[-1].replace(']', '') if '[' in target_intf else target_intf
+                        logger.debug(f"Looking up interface '{clean_target_intf}' for device '{target_device}'")
+                        
                         # Try exact match first
-                        if target_intf in interface_map[target_device]:
-                            iface_data = interface_map[target_device][target_intf]
+                        if clean_target_intf in interface_map[target_device]:
+                            iface_data = interface_map[target_device][clean_target_intf]
                             target_interface_obj["ip_address"] = iface_data["ip_address"]
                             target_interface_obj["subnet_mask"] = iface_data["subnet_mask"]
                             target_interface_obj["description"] = iface_data["description"]
                             target_interface_obj["status"] = "up" if iface_data["active"] else "down"
                             target_interface_obj["vlan"] = iface_data["vlan"]
                             target_interface_obj["is_trunk"] = iface_data["switchport_mode"] == "TRUNK" if iface_data["switchport_mode"] else False
+                            logger.debug(f"Matched interface {clean_target_intf} with IP {iface_data['ip_address']}")
                         else:
-                            # Try to match by the interface name portion
-                            interface_name = target_intf.split('[')[-1].replace(']', '') if '[' in target_intf else target_intf
+                            # Try fuzzy match by checking if the interface name contains the key
+                            matched = False
                             for iface_key, iface_data in interface_map[target_device].items():
-                                if interface_name in iface_key:
+                                if clean_target_intf in iface_key or iface_key in clean_target_intf:
                                     target_interface_obj["ip_address"] = iface_data["ip_address"]
                                     target_interface_obj["subnet_mask"] = iface_data["subnet_mask"]
                                     target_interface_obj["description"] = iface_data["description"]
                                     target_interface_obj["status"] = "up" if iface_data["active"] else "down"
                                     target_interface_obj["vlan"] = iface_data["vlan"]
                                     target_interface_obj["is_trunk"] = iface_data["switchport_mode"] == "TRUNK" if iface_data["switchport_mode"] else False
+                                    logger.debug(f"Fuzzy matched interface {clean_target_intf} to {iface_key} with IP {iface_data['ip_address']}")
+                                    matched = True
                                     break
+                            if not matched:
+                                logger.warning(f"No match found for interface {clean_target_intf} on device {target_device}")
                     
                     # Check if interface already exists before adding
                     source_intf_exists = False
