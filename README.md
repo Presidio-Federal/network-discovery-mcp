@@ -61,10 +61,11 @@ Both modes provide identical functionality with different integration patterns.
 ### Core Discovery Features
 
 - **Automated Network Mapping**: Discover entire network topology from a single seed device
-- **Multi-Vendor Support**: Works with Cisco, Juniper, Arista, and other network vendors
+- **Intelligent Multi-Vendor Support**: Automatically detects device OS after login (Cisco, Juniper, Arista, Palo Alto, Fortinet, Huawei)
+- **Enhanced Device Fingerprinting**: Improved vendor identification with support for Arista EOS, Juniper JUNOS, and Palo Alto PAN-OS
 - **Parallel Operations**: High-performance scanning and configuration collection
-- **Configuration Management**: Securely collect and store device configurations
-- **Interactive Visualizations**: Generate interactive HTML network topology maps
+- **Configuration Management**: Securely collect and store device configurations with vendor-specific commands
+- **Interactive Visualizations**: Generate interactive HTML network topology maps with color-coded device status
 - **Batfish Integration**: Advanced network analysis and validation
 
 ### Reliability Features
@@ -81,6 +82,13 @@ Both modes provide identical functionality with different integration patterns.
 - **Job Statistics**: Detailed progress tracking and success metrics
 - **Failure Analysis**: Intelligent recommendations for troubleshooting
 - **Historical Tracking**: Track job history and success rates over time
+
+### Intelligent Features
+
+- **Automatic OS Detection**: Detects device operating system after SSH login (eliminates need for platform parameter)
+- **Vendor-Specific Commands**: Automatically selects correct commands for each vendor
+- **Fingerprint Correction**: Corrects misidentifications by validating OS post-authentication
+- **Fallback Mechanisms**: Uses fingerprint data if OS detection fails
 
 ### Security Features
 
@@ -139,12 +147,13 @@ curl -X POST http://localhost:8000/v1/seed \
     "seed_host": "192.168.1.1",
     "credentials": {
       "username": "admin",
-      "password": "your_password",
-      "platform": "cisco_ios"
+      "password": "your_password"
     },
     "methods": ["interfaces", "routing", "arp", "cdp"]
   }'
 ```
+
+**Note**: The `platform` parameter (like `cisco_ios`) is now optional! The system automatically detects the device OS after login and selects the appropriate commands. You can still provide `platform` as a fallback if needed.
 
 The response includes a job_id that you can use to track progress and retrieve results.
 
@@ -493,18 +502,19 @@ curl -X POST http://localhost:8000/v1/credentials/validate \
   -d '{
     "seed_host": "192.168.1.1",
     "username": "admin",
-    "password": "cisco123",
-    "platform": "cisco_ios"
+    "password": "cisco123"
   }'
 ```
+
+**Note**: The `platform` parameter is optional. The system will automatically detect the OS after connecting.
 
 Response:
 ```json
 {
   "valid": true,
   "latency_ms": 2340,
-  "vendor": "cisco_ios",
-  "platform_correct": true,
+  "detected_vendor": "Cisco",
+  "detected_model": "IOS-XE",
   "can_read_config": true
 }
 ```
@@ -522,12 +532,13 @@ curl -X POST http://localhost:8000/v1/seed \
     "seed_host": "192.168.1.1",
     "credentials": {
       "username": "admin",
-      "password": "cisco123",
-      "platform": "cisco_ios"
+      "password": "cisco123"
     },
     "methods": ["interfaces", "routing", "arp", "cdp"]
   }'
 ```
+
+**Note**: Platform auto-detection happens automatically. You can optionally provide `"platform": "cisco_ios"` as a fallback if detection should fail.
 
 Response:
 ```json
@@ -589,7 +600,7 @@ Response:
 
 #### Step 5: Collect Configurations
 
-Collect device configurations:
+Collect device configurations (platform auto-detected):
 
 ```bash
 curl -X POST http://localhost:8000/v1/state/collect \
@@ -598,12 +609,19 @@ curl -X POST http://localhost:8000/v1/state/collect \
     "job_id": "net-disc-20251102-123456",
     "credentials": {
       "username": "admin",
-      "password": "cisco123",
-      "platform": "cisco_ios"
+      "password": "cisco123"
     },
     "concurrency": 50
   }'
 ```
+
+**Note**: The system automatically detects each device's OS after login and runs the appropriate commands:
+- Cisco: `show running-config`
+- Arista: `show running-config`  
+- Juniper: `show configuration | display set`
+- Palo Alto: `show config running`
+- Fortinet: `show full-configuration`
+- Huawei: `display current-configuration`
 
 Response:
 ```json
@@ -1696,9 +1714,7 @@ If you encounter issues not covered here:
 ## Additional Resources
 
 - **API Documentation**: http://localhost:8000/docs (interactive Swagger UI)
-- **MCP Tools Documentation**: `METRICS-MCP-TOOLS.md`
-- **Implementation Details**: `CREDENTIAL-VALIDATION-AND-JOB-RESUME.md`
-- **Large Network Best Practices**: `CRITICAL-IMPROVEMENTS-FOR-LARGE-NETWORKS.md`
+- **GitHub Releases**: https://github.com/username/network-discovery-mcp/releases (version history and changelogs)
 
 ---
 

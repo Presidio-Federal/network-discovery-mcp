@@ -46,49 +46,100 @@ logger = logging.getLogger(__name__)
 # Fingerprint database for device identification
 FINGERPRINT_DB = {
     "ssh_banners": {
+        # Cisco patterns
+        r"^SSH-2.0-Cisco-1.25": {"vendor": "Cisco", "model": "IOS"},
+        r"^SSH-2.0-Cisco-2.0": {"vendor": "Cisco", "model": "IOS-XE"},
         r"^SSH-2.0-Cisco": {"vendor": "Cisco"},
-        r"^SSH-2.0-JUNOS": {"vendor": "Juniper"},
-        r"^SSH-2.0-Arista": {"vendor": "Arista"},
-        r"^SSH-2.0-Palo Alto": {"vendor": "Palo Alto"},
-        r"^SSH-2.0-OpenSSH.*Debian": {"vendor": "Debian Linux"},
-        r"^SSH-2.0-OpenSSH.*Ubuntu": {"vendor": "Ubuntu Linux"},
-        r"^SSH-2.0-OpenSSH": {"vendor": "Linux/Unix"},
+        
+        # Arista patterns - EOS uses OpenSSH but with specific versions
+        r"^SSH-2.0-OpenSSH_7\.[4-9].*Arista": {"vendor": "Arista", "model": "EOS"},
+        r"^SSH-2.0-OpenSSH_8\..*Arista": {"vendor": "Arista", "model": "EOS"},
+        r"^SSH-2.0-Arista": {"vendor": "Arista", "model": "EOS"},
+        
+        # Juniper patterns - JUNOS specific
+        r"^SSH-2.0-JUNOS": {"vendor": "Juniper", "model": "JUNOS"},
+        r"^SSH-2.0-Juniper": {"vendor": "Juniper", "model": "JUNOS"},
+        
+        # Palo Alto patterns
+        r"^SSH-2.0-PanOS": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        r"^SSH-2.0-Palo Alto": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        r"^SSH-2.0-PAN-OS": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        
+        # Other vendors
         r"^SSH-2.0-Fortinet": {"vendor": "Fortinet"},
         r"^SSH-2.0-HUAWEI": {"vendor": "Huawei"},
         r"^SSH-2.0-Nokia": {"vendor": "Nokia"},
-        r"^SSH-2.0-Cisco-1.25": {"vendor": "Cisco", "model": "IOS"},
-        r"^SSH-2.0-Cisco-2.0": {"vendor": "Cisco", "model": "IOS-XE"},
+        
+        # Linux patterns (lower priority - should come last)
+        r"^SSH-2.0-OpenSSH.*Debian": {"vendor": "Debian Linux"},
+        r"^SSH-2.0-OpenSSH.*Ubuntu": {"vendor": "Ubuntu Linux"},
+        r"^SSH-2.0-OpenSSH": {"vendor": "Linux/Unix"},
     },
     "http_server": {
+        # Cisco
         "IOS-XE": {"vendor": "Cisco", "model": "IOS-XE"},
         "IOS": {"vendor": "Cisco", "model": "IOS"},
         "NX-OS": {"vendor": "Cisco", "model": "NX-OS"},
         "Cisco-ASA": {"vendor": "Cisco", "model": "ASA"},
-        "Juniper": {"vendor": "Juniper"},
-        "Arista": {"vendor": "Arista"},
-        "Palo Alto": {"vendor": "Palo Alto"},
+        
+        # Arista - typically uses nginx with EOS branding
+        "Arista-EOS": {"vendor": "Arista", "model": "EOS"},
+        "Arista": {"vendor": "Arista", "model": "EOS"},
+        "nginx/Arista": {"vendor": "Arista", "model": "EOS"},
+        
+        # Juniper - Web UI
+        "Juniper-HTTP": {"vendor": "Juniper", "model": "JUNOS"},
+        "Juniper": {"vendor": "Juniper", "model": "JUNOS"},
+        "lighttpd/Juniper": {"vendor": "Juniper", "model": "JUNOS"},
+        
+        # Palo Alto - pan-os web server
+        "PAN-OS": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        "Palo Alto": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        "pan-os": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        
+        # Other vendors
+        "Fortinet": {"vendor": "Fortinet"},
+        "HUAWEI": {"vendor": "Huawei"},
+        
+        # Generic servers (lower priority)
         "nginx": {"vendor": "NGINX"},
         "Apache": {"vendor": "Apache"},
         "Microsoft-IIS": {"vendor": "Microsoft", "model": "IIS"},
-        "Fortinet": {"vendor": "Fortinet"},
-        "HUAWEI": {"vendor": "Huawei"},
     },
     "snmp_sysdescr": {
+        # Cisco
         "Cisco IOS": {"vendor": "Cisco", "model": "IOS"},
         "Cisco IOS-XE": {"vendor": "Cisco", "model": "IOS-XE"},
         "Cisco NX-OS": {"vendor": "Cisco", "model": "NX-OS"},
-        "Juniper": {"vendor": "Juniper"},
-        "Arista": {"vendor": "Arista"},
-        "Palo Alto": {"vendor": "Palo Alto"},
+        
+        # Arista - EOS identifies itself clearly
+        "Arista Networks EOS": {"vendor": "Arista", "model": "EOS"},
+        "Arista": {"vendor": "Arista", "model": "EOS"},
+        
+        # Juniper - JUNOS identification
+        "Juniper Networks, Inc. junos": {"vendor": "Juniper", "model": "JUNOS"},
+        "JUNOS": {"vendor": "Juniper", "model": "JUNOS"},
+        "Juniper": {"vendor": "Juniper", "model": "JUNOS"},
+        
+        # Palo Alto - PAN-OS identification  
+        "Palo Alto Networks": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        "PAN-OS": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        
+        # Other vendors
         "Fortinet": {"vendor": "Fortinet"},
         "HUAWEI": {"vendor": "Huawei"},
         "Linux": {"vendor": "Linux/Unix"},
     },
     "tls_cn": {
         "cisco": {"vendor": "Cisco"},
+        "ios": {"vendor": "Cisco"},
         "juniper": {"vendor": "Juniper"},
+        "junos": {"vendor": "Juniper"},
         "arista": {"vendor": "Arista"},
+        "eos": {"vendor": "Arista"},
         "paloalto": {"vendor": "Palo Alto"},
+        "palo alto": {"vendor": "Palo Alto"},
+        "pan-os": {"vendor": "Palo Alto"},
         "fortinet": {"vendor": "Fortinet"},
         "huawei": {"vendor": "Huawei"},
     }

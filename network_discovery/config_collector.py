@@ -61,6 +61,35 @@ CONFIG_COMMANDS = {
 # Default command if vendor is unknown
 DEFAULT_CONFIG_COMMAND = "show running-config"
 
+# OS detection patterns based on command output
+OS_DETECTION_PATTERNS = {
+    "show version": {
+        # Cisco IOS/IOS-XE
+        r"Cisco IOS Software": {"vendor": "Cisco", "model": "IOS"},
+        r"Cisco IOS XE Software": {"vendor": "Cisco", "model": "IOS-XE"},
+        r"Cisco Nexus Operating System": {"vendor": "Cisco", "model": "NX-OS"},
+        r"Cisco Adaptive Security Appliance": {"vendor": "Cisco", "model": "ASA"},
+        
+        # Arista EOS
+        r"Arista .* EOS": {"vendor": "Arista", "model": "EOS"},
+        r"Arista vEOS": {"vendor": "Arista", "model": "EOS"},
+        
+        # Juniper JUNOS
+        r"JUNOS": {"vendor": "Juniper", "model": "JUNOS"},
+        r"Juniper Networks": {"vendor": "Juniper", "model": "JUNOS"},
+        
+        # Palo Alto PAN-OS
+        r"PAN-OS": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        
+        # Fortinet
+        r"FortiGate": {"vendor": "Fortinet", "model": "FortiOS"},
+        
+        # Huawei
+        r"Huawei Versatile Routing Platform": {"vendor": "Huawei", "model": "VRP"},
+        r"HUAWEI": {"vendor": "Huawei", "model": "VRP"},
+    }
+}
+
 def extract_hostname_from_config(config: str, vendor: str, default_hostname: str) -> str:
     """
     Extract the hostname from device configuration.
@@ -91,6 +120,16 @@ def extract_hostname_from_config(config: str, vendor: str, default_hostname: str
                     if hostname:
                         return hostname
         
+        elif vendor == "Palo Alto":
+            # Palo Alto uses "set deviceconfig system hostname <name>"
+            for line in config.splitlines():
+                if "hostname" in line.lower():
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        hostname = parts[-1].strip()
+                        if hostname:
+                            return hostname
+        
         # Add more vendor-specific hostname extraction as needed
         
         # If we couldn't extract the hostname, use the default
@@ -99,6 +138,53 @@ def extract_hostname_from_config(config: str, vendor: str, default_hostname: str
         # If any error occurs during extraction, use the default hostname
         logger.warning(f"Failed to extract hostname from config: {str(e)}")
         return default_hostname
+
+async def detect_os_from_device(conn: asyncssh.SSHClientConnection) -> Optional[Dict]:
+    """
+    Detect device OS after establishing SSH connection.
+    
+    This function runs 'show version' and analyzes the output to determine
+    the actual device vendor and model, allowing for intelligent command selection.
+    
+    Args:
+        conn: Active asyncssh connection
+        
+    Returns:
+        Dict with 'vendor' and 'model' keys, or None if detection fails
+    """
+    try:
+        logger.debug("Attempting OS detection via 'show version'")
+        
+        # Try 'show version' command (works on most network devices)
+        result = await asyncio.wait_for(conn.run("show version"), timeout=10)
+        
+        if result.exit_status != 0:
+            logger.debug(f"'show version' failed with exit status {result.exit_status}")
+            return None
+        
+        output = result.stdout
+        
+        # Check patterns for OS detection
+        for pattern, info in OS_DETECTION_PATTERNS["show version"].items():
+            if re.search(pattern, output, re.IGNORECASE | re.MULTILINE):
+                detected_vendor = info["vendor"]
+                detected_model = info.get("model", "unknown")
+                logger.info(f"OS detected: {detected_vendor} {detected_model}")
+                return {
+                    "vendor": detected_vendor,
+                    "model": detected_model,
+                    "detection_method": "show_version"
+                }
+        
+        logger.debug("No OS pattern matched in 'show version' output")
+        return None
+        
+    except asyncio.TimeoutError:
+        logger.debug("OS detection timed out")
+        return None
+    except Exception as e:
+        logger.debug(f"OS detection failed: {str(e)}")
+        return None
 
 def update_collection_status(job_id: str, status: Dict) -> None:
     """
@@ -780,12 +866,15 @@ async def _collect_device_config(
 @retry_with_backoff(max_attempts=3, initial_delay=2.0, max_delay=10.0)
 async def _collect_via_ssh(ip: str, creds: Dict, vendor: str) -> str:
     """
-    Collect configuration via SSH.
+    Collect configuration via SSH with intelligent OS detection.
+    
+    This function now automatically detects the device OS after login,
+    eliminating the need for accurate vendor information in the API call.
     
     Args:
         ip: Device IP address
         creds: Authentication credentials
-        vendor: Device vendor
+        vendor: Device vendor (from fingerprinting, used as fallback)
         
     Returns:
         str: Device configuration
@@ -801,10 +890,6 @@ async def _collect_via_ssh(ip: str, creds: Dict, vendor: str) -> str:
         host = ip
         port = 22
         logger.debug(f"Using default port 22 for {host}")
-    
-    # Get the appropriate command for this vendor
-    command = CONFIG_COMMANDS.get(vendor, DEFAULT_CONFIG_COMMAND)
-    logger.debug(f"Using command for {vendor}: '{command}'")
     
     try:
         logger.debug(f"Establishing SSH connection to {host}:{port}")
@@ -826,6 +911,21 @@ async def _collect_via_ssh(ip: str, creds: Dict, vendor: str) -> str:
         async with conn:
             connection_time = time.time() - start_time
             logger.debug(f"SSH connection established to {host}:{port} in {connection_time:.2f}s")
+            
+            # Attempt OS detection after successful login
+            detected_os = await detect_os_from_device(conn)
+            
+            # Determine which vendor to use
+            if detected_os:
+                actual_vendor = detected_os["vendor"]
+                logger.info(f"Using detected OS: {actual_vendor} (fingerprint said: {vendor})")
+            else:
+                actual_vendor = vendor
+                logger.info(f"OS detection failed, using fingerprint vendor: {vendor}")
+            
+            # Get the appropriate command for this vendor
+            command = CONFIG_COMMANDS.get(actual_vendor, DEFAULT_CONFIG_COMMAND)
+            logger.debug(f"Using command for {actual_vendor}: '{command}'")
             
             logger.debug(f"Executing command on {host}: '{command}'")
             cmd_start_time = time.time()
