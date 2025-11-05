@@ -44,6 +44,7 @@ from network_discovery.batfish_loader import (
 )
 from network_discovery.topology_visualizer import generate_topology_html
 from network_discovery.tools.get_artifact_content import get_artifact_content
+from network_discovery.interface_collector import collect_interface_data, load_interface_data, get_device_interfaces, get_interface_details
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -916,4 +917,130 @@ async def set_snapshot(network_name: str, snapshot_name: str, batfish_host: str 
         return {"network": network_name, "snapshot": snapshot_name, "status": "success"}
     except Exception as e:
         logger.error(f"Error in set_snapshot endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Interface Collection Endpoints
+# ============================================================================
+
+@app.post("/v1/interfaces/collect", response_model=Dict)
+async def collect_interfaces(
+    job_id: str = Query(..., description="Job ID to collect interfaces for"),
+    network_name: Optional[str] = Query(None, description="Optional Batfish network name (defaults to job_id)"),
+    snapshot_name: Optional[str] = Query(None, description="Optional Batfish snapshot name (defaults to 'snapshot_latest')")
+):
+    """
+    Collect interface data from Batfish and store as artifact.
+    
+    This endpoint queries Batfish for detailed interface properties and stores
+    them in interfaces.json for later use by visualization and analysis tools.
+    
+    Returns:
+        - status: "success" or "error"
+        - interface_count: Number of interfaces collected
+        - device_count: Number of devices with interfaces
+        - network_name: Batfish network name used
+        - snapshot_name: Batfish snapshot name used
+        - collected_at: ISO timestamp of collection
+    """
+    if not BATFISH_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Batfish functionality is not available")
+    
+    try:
+        result = collect_interface_data(
+            job_id=job_id,
+            network_name=network_name,
+            snapshot_name=snapshot_name
+        )
+        
+        if result.get("status") == "error":
+            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+        
+        # Return summary (without full interface list for brevity)
+        return {
+            "status": result["status"],
+            "interface_count": result["interface_count"],
+            "device_count": result["device_count"],
+            "network_name": result["network_name"],
+            "snapshot_name": result["snapshot_name"],
+            "collected_at": result["collected_at"]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in collect_interfaces endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/interfaces/{job_id}", response_model=Dict)
+async def get_interfaces(job_id: str):
+    """
+    Get all interface data for a job.
+    
+    Returns the complete interfaces.json artifact including all devices and interfaces.
+    """
+    try:
+        data = load_interface_data(job_id)
+        
+        if not data:
+            raise HTTPException(status_code=404, detail=f"Interface data not found for job {job_id}")
+        
+        return data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_interfaces endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/interfaces/{job_id}/devices/{device_name}", response_model=List[Dict])
+async def get_device_interfaces_api(job_id: str, device_name: str):
+    """
+    Get all interfaces for a specific device.
+    
+    Returns a list of interface records for the specified device.
+    """
+    try:
+        interfaces = get_device_interfaces(job_id, device_name)
+        
+        if not interfaces:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No interfaces found for device {device_name} in job {job_id}"
+            )
+        
+        return interfaces
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_device_interfaces_api endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/interfaces/{job_id}/devices/{device_name}/interfaces/{interface_name}", response_model=Dict)
+async def get_interface_details_api(job_id: str, device_name: str, interface_name: str):
+    """
+    Get details for a specific interface.
+    
+    Returns detailed properties for a single interface.
+    """
+    try:
+        interface = get_interface_details(job_id, device_name, interface_name)
+        
+        if not interface:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Interface {interface_name} not found on device {device_name} in job {job_id}"
+            )
+        
+        return interface
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_interface_details_api endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -16,6 +16,7 @@ from pybatfish.client.session import Session
 
 from network_discovery.fingerprinter import get_fingerprints_path
 from network_discovery.artifacts import get_reachable_hosts_path, read_json
+from network_discovery.interface_collector import load_interface_data
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -151,34 +152,51 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
         logger.info("Retrieving network edges from Batfish")
         edges_df = bf.q.edges().answer().frame()
         
-        # Get detailed interface properties
-        logger.info("Retrieving interface properties from Batfish")
-        try:
-            # Batfish interfaceProperties - use correct property names
-            # Common properties: Primary_Address, Description, VLAN, VRF, Active
-            # Note: property names are case-sensitive
-            iface_df = bf.q.interfaceProperties().answer().frame()
-            logger.info(f"Retrieved {len(iface_df)} interface records")
-        except Exception as e:
-            logger.warning(f"Failed to retrieve interface properties: {str(e)}")
-            iface_df = None
+        # Try to load interface data from artifact first
+        logger.info("Loading interface data from artifact")
+        interface_artifact = load_interface_data(actual_network_name)
+        interface_map = {}
         
-        if edges_df.empty:
-            logger.warning("No edges found in the topology")
-            # Create a minimal data structure with a message
-            topology_data = {
-                "devices": {},
-                "connections": []
-            }
-        else:
-            # Create a data structure for the visualization
-            devices = {}
-            connections = []
+        if interface_artifact and interface_artifact.get("status") == "success":
+            logger.info(f"Loaded interface data from artifact: {interface_artifact.get('interface_count', 0)} interfaces")
+            # Build interface map from artifact
+            for device_name, interfaces in interface_artifact.get("devices", {}).items():
+                if device_name not in interface_map:
+                    interface_map[device_name] = {}
+                
+                for iface in interfaces:
+                    interface_name = iface.get("interface", "")
+                    
+                    # Extract IP and subnet from primary_address (format: x.x.x.x/yy or x.x.x.x)
+                    ip_address = None
+                    subnet_mask = None
+                    primary_addr = iface.get("primary_address")
+                    if primary_addr and '/' in primary_addr:
+                        ip_parts = primary_addr.split('/')
+                        if len(ip_parts) == 2:
+                            ip_address = ip_parts[0]
+                            subnet_mask = ip_parts[1]
+                    elif primary_addr:
+                        ip_address = primary_addr
+                    
+                    interface_map[device_name][interface_name] = {
+                        "ip_address": ip_address,
+                        "subnet_mask": subnet_mask,
+                        "description": iface.get("description"),
+                        "active": iface.get("active", False),
+                        "vlan": iface.get("vlan"),
+                        "vrf": iface.get("vrf", "default"),
+                        "switchport_mode": iface.get("switchport_mode")
+                    }
             
-            # Create a map of interfaces by node and interface name for quick lookup
-            interface_map = {}
-            if iface_df is not None:
-                logger.info(f"Building interface map from {len(iface_df)} interface records")
+            logger.info(f"Built interface map from artifact with {len(interface_map)} devices")
+        else:
+            # Fallback to querying Batfish directly if artifact not available
+            logger.warning("Interface artifact not found, querying Batfish directly")
+            try:
+                iface_df = bf.q.interfaceProperties().answer().frame()
+                logger.info(f"Retrieved {len(iface_df)} interface records from Batfish")
+                
                 for _, row in iface_df.iterrows():
                     node = str(row.get('Node', ''))
                     interface = str(row.get('Interface', ''))
@@ -186,7 +204,7 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                     if node not in interface_map:
                         interface_map[node] = {}
                     
-                    # Extract IP from Primary_Address (format: x.x.x.x/yy)
+                    # Extract IP from Primary_Address
                     ip_address = None
                     subnet_mask = None
                     primary_addr = row.get('Primary_Address')
@@ -205,16 +223,25 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                         "vrf": row.get('VRF', 'default'),
                         "switchport_mode": row.get('Switchport_Mode', None)
                     }
-                    
-                    # Log the first few entries for debugging
-                    if len(interface_map[node]) <= 3:
-                        logger.info(f"Added interface {node}[{interface}] -> IP: {ip_address}, Desc: {row.get('Description', None)}")
                 
-                logger.info(f"Created interface map with {len(interface_map)} devices")
-                for device_name, interfaces in list(interface_map.items())[:3]:  # Log first 3 devices
-                    logger.info(f"Device '{device_name}' has {len(interfaces)} interfaces: {list(interfaces.keys())[:5]}")
-            else:
-                logger.warning("No interface dataframe available - interface properties will be empty")
+                logger.info(f"Built interface map from Batfish with {len(interface_map)} devices")
+            except Exception as e:
+                logger.warning(f"Failed to retrieve interface properties from Batfish: {str(e)}")
+        
+        if not interface_map:
+            logger.warning("No interface data available - interface properties will be empty")
+        
+        if edges_df.empty:
+            logger.warning("No edges found in the topology")
+            # Create a minimal data structure with a message
+            topology_data = {
+                "devices": {},
+                "connections": []
+            }
+        else:
+            # Create a data structure for the visualization
+            devices = {}
+            connections = []
             
             # Process edges to extract devices and connections
             for _, row in edges_df.iterrows():

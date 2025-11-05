@@ -42,6 +42,12 @@ from network_discovery.topology_visualizer import generate_topology_html
 from network_discovery.config import DEFAULT_CONCURRENCY, DEFAULT_PORTS, DEFAULT_SEEDER_METHODS
 from network_discovery.artifacts import get_job_dir, read_json
 from network_discovery.tools.get_artifact_content import get_artifact_content as retrieve_artifact_content
+from network_discovery.interface_collector import (
+    collect_interface_data,
+    load_interface_data,
+    get_device_interfaces,
+    get_interface_details
+)
 from network_discovery.metrics import (
     get_system_health,
     get_job_statistics,
@@ -1172,6 +1178,189 @@ def create_server() -> FastMCP:
         except Exception as e:
             logger.error(f"Error in list_resumable_jobs tool: {str(e)}")
             return {"error": str(e), "resumable_jobs": [], "count": 0}
+    
+    # === Interface Collection Tools ===
+    @mcp.tool
+    async def collect_interfaces(
+        job_id: str,
+        network_name: Optional[str] = None,
+        snapshot_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Collect interface data from Batfish.
+        
+        This tool queries Batfish for detailed interface properties (IP addresses,
+        VLANs, descriptions, status, etc.) and stores them in interfaces.json
+        for later use by visualization and analysis tools.
+        
+        Args:
+            job_id: Job identifier
+            network_name: Optional Batfish network name (defaults to job_id)
+            snapshot_name: Optional Batfish snapshot name (defaults to "snapshot_latest")
+            
+        Returns:
+            {
+                "status": "success",
+                "interface_count": 245,
+                "device_count": 15,
+                "network_name": "my-network",
+                "snapshot_name": "snapshot_latest",
+                "collected_at": "2025-11-05T12:34:56.789Z"
+            }
+            
+        Example AI Agent Usage:
+            Agent: "I need interface details for the topology..."
+            → collect_interfaces(job_id="abc-123")
+            → "Collected 245 interfaces from 15 devices"
+            Agent: "Now I can query specific interface data"
+        """
+        try:
+            result = collect_interface_data(
+                job_id=job_id,
+                network_name=network_name,
+                snapshot_name=snapshot_name
+            )
+            
+            if result.get("status") == "error":
+                return result
+            
+            # Return summary (without full interface list)
+            return {
+                "status": result["status"],
+                "interface_count": result["interface_count"],
+                "device_count": result["device_count"],
+                "network_name": result["network_name"],
+                "snapshot_name": result["snapshot_name"],
+                "collected_at": result["collected_at"]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in collect_interfaces tool: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    @mcp.tool
+    async def get_all_interfaces(job_id: str) -> Dict[str, Any]:
+        """Get all interface data for a job.
+        
+        Returns the complete interfaces.json artifact including all devices
+        and their interface properties.
+        
+        Args:
+            job_id: Job identifier
+            
+        Returns:
+            Complete interface data structure with devices and interfaces
+            
+        Example AI Agent Usage:
+            Agent: "Show me all interfaces in the network"
+            → get_all_interfaces(job_id="abc-123")
+            Agent: "Found 15 devices with 245 total interfaces"
+        """
+        try:
+            data = load_interface_data(job_id)
+            
+            if not data:
+                return {
+                    "status": "error",
+                    "error": f"Interface data not found for job {job_id}"
+                }
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"Error in get_all_interfaces tool: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    @mcp.tool
+    async def get_device_interface_list(
+        job_id: str,
+        device_name: str
+    ) -> Dict[str, Any]:
+        """Get all interfaces for a specific device.
+        
+        Args:
+            job_id: Job identifier
+            device_name: Device hostname
+            
+        Returns:
+            List of interface records for the device
+            
+        Example AI Agent Usage:
+            Agent: "What interfaces does hai-core-01 have?"
+            → get_device_interface_list(job_id="abc-123", device_name="hai-core-01")
+            Agent: "Device has 6 interfaces: GigabitEthernet1-6"
+        """
+        try:
+            interfaces = get_device_interfaces(job_id, device_name)
+            
+            if not interfaces:
+                return {
+                    "status": "error",
+                    "error": f"No interfaces found for device {device_name}",
+                    "interfaces": []
+                }
+            
+            return {
+                "status": "success",
+                "device": device_name,
+                "interface_count": len(interfaces),
+                "interfaces": interfaces
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in get_device_interface_list tool: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "interfaces": []
+            }
+    
+    @mcp.tool
+    async def get_interface_info(
+        job_id: str,
+        device_name: str,
+        interface_name: str
+    ) -> Dict[str, Any]:
+        """Get detailed properties for a specific interface.
+        
+        Args:
+            job_id: Job identifier
+            device_name: Device hostname
+            interface_name: Interface name (e.g., "GigabitEthernet1")
+            
+        Returns:
+            Detailed interface properties including IP, VLAN, description, status, etc.
+            
+        Example AI Agent Usage:
+            Agent: "What's the IP of GigabitEthernet1 on hai-core-01?"
+            → get_interface_info(job_id="abc-123", device_name="hai-core-01", interface_name="GigabitEthernet1")
+            Agent: "Interface has IP 20.0.0.1/30 and is active"
+        """
+        try:
+            interface = get_interface_details(job_id, device_name, interface_name)
+            
+            if not interface:
+                return {
+                    "status": "error",
+                    "error": f"Interface {interface_name} not found on device {device_name}"
+                }
+            
+            return {
+                "status": "success",
+                "interface": interface
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in get_interface_info tool: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
     
     return mcp
 
