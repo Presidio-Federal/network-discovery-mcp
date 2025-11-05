@@ -89,9 +89,18 @@ def collect_interface_data(job_id: str, network_name: str = None, snapshot_name:
         devices = {}
         
         for _, row in iface_df.iterrows():
+            # Extract interface object - it's a Batfish Interface object with attributes
+            interface_obj = row.get("Interface")
+            if interface_obj:
+                node = str(interface_obj.hostname) if hasattr(interface_obj, 'hostname') else ""
+                interface_name = str(interface_obj.interface) if hasattr(interface_obj, 'interface') else ""
+            else:
+                node = ""
+                interface_name = ""
+            
             interface_data = {
-                "node": str(row.get("Interface", {}).get("hostname", "")),
-                "interface": str(row.get("Interface", {}).get("interface", "")),
+                "node": node,
+                "interface": interface_name,
                 "active": bool(row.get("Active", False)),
                 "primary_address": str(row.get("Primary_Address")) if row.get("Primary_Address") else None,
                 "primary_network": str(row.get("Primary_Network")) if row.get("Primary_Network") else None,
