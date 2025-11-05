@@ -14,7 +14,7 @@ Modules:
   - Use get_scan_results for all results, or get_reachable_scan_results for the active hosts.
 3. Fingerprint
   - Fingerprint_hosts is required before getting configs. This tells the config tool the proper vendor to use during collection.
-  - If devices are not identified, use deep_fingerprint_scan tool to identify vendor..
+  - If devices are not identified, use deep_fingerprint_scan tool to identify vendor.
 4. State Collector
   - collect_device_configs uses fingerprint results to parse running configs of all reachable devices.
   - If you want to see a specefic device config, use get_device_config tool.
@@ -31,9 +31,7 @@ Modules:
 8. Health & System Checks
   - validate_device_credentials tool allows you to validate credentials before discovery. 
   - You can use the validate_credentials_multiple for multiple devices.
-  - 
-
-
+  - If there are issues with a config, use get_collection_status_info to see if they were collected successfully.
 ---
 Workflow Logic:
 You must execute discovery in a controlled, sequential workflow unless the user explicitly requests an individual capability.

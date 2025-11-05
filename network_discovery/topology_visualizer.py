@@ -175,6 +175,7 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
             # Create a map of interfaces by node and interface name for quick lookup
             interface_map = {}
             if iface_df is not None:
+                logger.info(f"Building interface map from {len(iface_df)} interface records")
                 for _, row in iface_df.iterrows():
                     node = str(row.get('Node', ''))
                     interface = str(row.get('Interface', ''))
@@ -186,8 +187,8 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                     ip_address = None
                     subnet_mask = None
                     primary_addr = row.get('Primary_Address')
-                    if primary_addr and primary_addr != "AUTO/NONE(DYNAMIC)" and '/' in primary_addr:
-                        ip_parts = primary_addr.split('/')
+                    if primary_addr and primary_addr != "AUTO/NONE(DYNAMIC)" and '/' in str(primary_addr):
+                        ip_parts = str(primary_addr).split('/')
                         if len(ip_parts) == 2:
                             ip_address = ip_parts[0]
                             subnet_mask = ip_parts[1]
@@ -201,8 +202,16 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                         "vrf": row.get('VRF', 'default'),
                         "switchport_mode": row.get('Switchport_Mode', None)
                     }
+                    
+                    # Log the first few entries for debugging
+                    if len(interface_map[node]) <= 3:
+                        logger.info(f"Added interface {node}[{interface}] -> IP: {ip_address}, Desc: {row.get('Description', None)}")
                 
                 logger.info(f"Created interface map with {len(interface_map)} devices")
+                for device_name, interfaces in list(interface_map.items())[:3]:  # Log first 3 devices
+                    logger.info(f"Device '{device_name}' has {len(interfaces)} interfaces: {list(interfaces.keys())[:5]}")
+            else:
+                logger.warning("No interface dataframe available - interface properties will be empty")
             
             # Process edges to extract devices and connections
             for _, row in edges_df.iterrows():

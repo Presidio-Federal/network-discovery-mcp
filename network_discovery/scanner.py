@@ -487,8 +487,8 @@ async def _check_reachability_fping(ips: List[str]) -> Set[str]:
     """
     reachable_ips = set()
     
-    # Split into chunks to avoid command line length limits
-    chunk_size = 100
+    # Split into larger chunks for better performance
+    chunk_size = 250  # Increased from 100 for better efficiency
     total_chunks = (len(ips) + chunk_size - 1) // chunk_size
     logger.info(f"Splitting {len(ips)} IPs into {total_chunks} chunks of {chunk_size} for fping")
     
@@ -497,8 +497,8 @@ async def _check_reachability_fping(ips: List[str]) -> Set[str]:
         chunk = ips[i:i+chunk_size]
         logger.debug(f"Processing chunk {chunk_num}/{total_chunks} with {len(chunk)} IPs")
         
-        # Run fping
-        cmd = ["fping", "-a", "-q"]
+        # Run fping with optimized settings
+        cmd = ["fping", "-a", "-q", "-t", "200"]  # Added 200ms timeout for faster scanning
         cmd.extend(chunk)
         
         try:
@@ -541,7 +541,7 @@ async def _scan_ip_with_semaphore(ip: str, ports: List[int], semaphore: asyncio.
 
 async def _scan_ip(ip: str, ports: List[int]) -> Dict:
     """
-    Scan an IP for open ports in parallel.
+    Scan an IP for open ports in parallel (optimized for speed).
     
     Args:
         ip: IP address to scan
@@ -559,7 +559,6 @@ async def _scan_ip(ip: str, ports: List[int]) -> Dict:
     
     # Process results
     port_results = {}
-    banner = None
     open_ports = 0
     
     for port, result in zip(ports, port_check_results):
@@ -569,23 +568,18 @@ async def _scan_ip(ip: str, ports: List[int]) -> Dict:
             port_results[str(port)] = "closed"
             continue
         
-        is_open, port_banner = result
+        is_open, _ = result  # Banner is always None now
         port_results[str(port)] = "open" if is_open else "closed"
         
         if is_open:
             open_ports += 1
             logger.debug(f"Port {port} is OPEN on {ip}")
-            
-            # Store the first banner we find
-            if port_banner and not banner:
-                banner = port_banner
-                logger.debug(f"Captured banner from {ip}:{port} - {banner}")
     
-    # Calculate latency (average per port, but they ran in parallel)
+    # Calculate latency (total time for parallel scan)
     scan_duration = time.time() - start_time
-    latency_ms = int(scan_duration * 1000)  # Total time for parallel scan
+    latency_ms = int(scan_duration * 1000)
     
-    # Build result
+    # Build result (no banner field since fingerprinting will handle that)
     is_reachable = any(status == "open" for status in port_results.values())
     result = {
         "ip": ip,
@@ -594,103 +588,48 @@ async def _scan_ip(ip: str, ports: List[int]) -> Dict:
         "ports": port_results
     }
     
-    if banner:
-        result["banner"] = banner
-    
     status = "reachable" if is_reachable else "unreachable"
     logger.debug(f"IP {ip} parallel scan completed in {scan_duration:.3f}s - {status} with {open_ports}/{len(ports)} open ports")
     
     return result
 
-@retry_with_backoff(max_attempts=2, initial_delay=0.5, max_delay=2.0)
 async def _check_port(ip: str, port: int) -> Tuple[bool, Optional[str]]:
     """
-    Check if a port is open and get a banner if available.
+    Check if a port is open (optimized for speed - no banner collection).
+    
+    Scanner's job is ONLY to identify open ports quickly.
+    Fingerprinting phase will collect banners and certificates later.
     
     Args:
         ip: IP address to check
         port: Port number to check
         
     Returns:
-        Tuple[bool, Optional[str]]: (is_open, banner)
+        Tuple[bool, Optional[str]]: (is_open, None) - banner always None for speed
     """
     try:
-        # Create a socket and set a timeout
-        logger.debug(f"Checking {ip}:{port} with timeout {CONNECT_TIMEOUT}s")
+        # Reduced timeout for faster scanning
+        timeout = 0.5  # Down from 1.5s - if it doesn't respond quickly, it's likely filtered/closed
+        
+        logger.debug(f"Checking {ip}:{port} with timeout {timeout}s")
         start_time = time.time()
         
         try:
-            reader, writer = await with_timeout(
+            reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port),
-                timeout=CONNECT_TIMEOUT,
-                error_message=f"Connection to {ip}:{port} timed out"
+                timeout=timeout
             )
             connection_time = time.time() - start_time
-            logger.debug(f"Connection to {ip}:{port} successful in {connection_time:.3f}s")
+            logger.debug(f"Port {port} is OPEN on {ip} (connected in {connection_time:.3f}s)")
             
-            # Port is open, try to get a banner
-            banner = None
+            # Close connection immediately - no banner collection
+            writer.close()
+            await writer.wait_closed()
             
-            try:
-                if port == 22:
-                    # Try to get SSH banner
-                    logger.debug(f"Attempting to read SSH banner from {ip}:{port}")
-                    banner_data = await asyncio.wait_for(reader.read(100), timeout=1.0)
-                    banner = banner_data.decode('utf-8', errors='ignore').strip()
-                    
-                    # Only keep the first line of SSH banner
-                    if banner:
-                        banner = banner.split('\n')[0]
-                        logger.debug(f"Received SSH banner from {ip}:{port}: {banner}")
-                
-                elif port == 443:
-                    # Close the current connection
-                    logger.debug(f"Closing initial connection to {ip}:{port} to establish SSL connection")
-                    writer.close()
-                    await writer.wait_closed()
-                    
-                    # Try to get HTTPS certificate CN
-                    logger.debug(f"Attempting SSL connection to {ip}:{port}")
-                    ssl_context = ssl.create_default_context()
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
-                    
-                    try:
-                        ssl_start_time = time.time()
-                        ssl_reader, ssl_writer = await asyncio.wait_for(
-                            asyncio.open_connection(ip, port, ssl=ssl_context),
-                            timeout=CONNECT_TIMEOUT
-                        )
-                        ssl_connection_time = time.time() - ssl_start_time
-                        logger.debug(f"SSL connection to {ip}:{port} successful in {ssl_connection_time:.3f}s")
-                        
-                        # Get the certificate
-                        cert = ssl_writer.get_extra_info('peercert')
-                        if cert:
-                            for attr in cert.get('subject', []):
-                                if attr[0][0] == 'commonName':
-                                    banner = f"CN={attr[0][1]}"
-                                    logger.debug(f"Extracted certificate CN from {ip}:{port}: {banner}")
-                                    break
-                        else:
-                            logger.debug(f"No certificate found for {ip}:{port}")
-                        
-                        ssl_writer.close()
-                        await ssl_writer.wait_closed()
-                    except Exception as ssl_error:
-                        logger.debug(f"SSL connection to {ip}:{port} failed: {str(ssl_error)}")
-            except Exception as banner_error:
-                logger.debug(f"Failed to get banner from {ip}:{port}: {str(banner_error)}")
-            
-            # Close the connection
-            if port != 443:  # Already closed for HTTPS
-                writer.close()
-                await writer.wait_closed()
-            
-            return True, banner
+            return True, None  # Port is open, no banner (fingerprinting will handle that)
             
         except asyncio.TimeoutError:
-            logger.debug(f"Connection to {ip}:{port} timed out after {CONNECT_TIMEOUT}s")
+            logger.debug(f"Connection to {ip}:{port} timed out after {timeout}s")
             return False, None
         except ConnectionRefusedError:
             logger.debug(f"Connection to {ip}:{port} refused")
