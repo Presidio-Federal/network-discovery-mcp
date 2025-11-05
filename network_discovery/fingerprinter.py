@@ -315,12 +315,8 @@ async def _fingerprint_host(
         ports = host.get("ports", {})
         evidence = {}
         
-        # Extract existing SSH banner if available
-        if "banner" in host:
-            evidence["ssh_banner"] = host["banner"]
-        
-        # Check SSH (port 22)
-        if ports.get("22") == "open" and "banner" not in host:
+        # Check SSH (port 22) - always collect our own data
+        if ports.get("22") == "open":
             try:
                 ssh_banner = await _get_ssh_banner(ip)
                 if ssh_banner:
@@ -328,7 +324,7 @@ async def _fingerprint_host(
             except Exception as e:
                 logger.debug(f"Failed to get SSH banner from {ip}: {str(e)}")
         
-        # Check HTTPS (port 443)
+        # Check HTTPS (port 443) - always collect our own data
         if ports.get("443") == "open":
             try:
                 tls_info = await _get_tls_info(ip)

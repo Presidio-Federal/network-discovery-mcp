@@ -36,7 +36,7 @@ logging.getLogger('nornir').setLevel(logging.WARNING)
 ARTIFACT_DIR = os.environ.get("ARTIFACT_DIR", "/tmp/network_discovery_artifacts")
 DEFAULT_PORTS = [int(p) for p in os.environ.get("DEFAULT_PORTS", "22,443").split(",")]
 DEFAULT_CONCURRENCY = int(os.environ.get("DEFAULT_CONCURRENCY", "200"))
-DEFAULT_CONNECT_TIMEOUT = float(os.environ.get("CONNECT_TIMEOUT", "1.5"))
+DEFAULT_CONNECT_TIMEOUT = float(os.environ.get("CONNECT_TIMEOUT", "0.8"))  # Reduced for faster scanning
 # Also define CONNECT_TIMEOUT for backward compatibility
 CONNECT_TIMEOUT = DEFAULT_CONNECT_TIMEOUT
 DEFAULT_SEEDER_METHODS = ["interfaces", "routing", "arp", "cdp", "lldp"]

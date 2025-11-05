@@ -65,7 +65,7 @@ Step 1 — Seed Discovery
 Step 2 - Network Scan:
   - Use the same job_id returned from the Seeder step.
   - Execute the Scanner capability to probe the discovered targets:
-      ports: [22, 443]              # Default ports, configurable
+      ports: [22]              # Default ports, configurable
       concurrency: 200              # Default concurrency level
   - After initiating the scan:
       - Begin polling the /v1/status/{job_id} endpoint immediately.
@@ -75,12 +75,7 @@ Step 2 - Network Scan:
       - If the status remains "running" beyond expected duration:
           - Remain in the polling loop indefinitely until completion,
             unless the user explicitly cancels the run.
-      - If the scan fails:
-          - Retry once automatically.
-          - If the second attempt fails:
-              - Write detailed failure information to
-                /network_discovery/<job_id>/error.json.
-              - Halt execution gracefully.
+     
   - When the scan completes successfully:
       - Retrieve and validate the resulting artifacts under
         /network_discovery/<job_id>/.
@@ -96,6 +91,8 @@ Step 3 — Fingerprinting
 - Identify vendor, platform, and operating system for each reachable IP.
 - Output: fingerprints.json mapping IP → vendor/platform/OS.
 - Validate that vendor data exists for all reachable devices.
+
+CRITICAL: Run the deep fingerprint scan to identify devices that not identified by standard fingerprint.
 
 Step 4 — State Collection
 - Use the provided credentials to collect running configurations.
