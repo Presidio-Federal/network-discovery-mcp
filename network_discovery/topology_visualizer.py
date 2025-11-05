@@ -237,8 +237,20 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                     
                     # Add devices to the dictionary if they don't exist
                     if source_device not in devices:
-                        # Get actual device info from fingerprints/reachable
-                        device_info = device_info_map.get(source_device, {})
+                        # Get actual device info from fingerprints using IP address
+                        # Extract IPs from the edge if available
+                        source_ips = row.get("IPs", [])
+                        device_info = {}
+                        if source_ips:
+                            # Try to find fingerprint data by IP
+                            for ip in source_ips:
+                                if ip in device_info_map:
+                                    device_info = device_info_map[ip]
+                                    break
+                        
+                        # Fallback: try hostname lookup
+                        if not device_info:
+                            device_info = device_info_map.get(source_device, {})
                         
                         # Try to determine device type from hostname if not in device_info
                         device_type = "unknown"
@@ -255,7 +267,7 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                             
                         devices[source_device] = {
                             "hostname": source_device,
-                            "ip_address": device_info.get("ip_address", source_device),
+                            "ip_address": device_info.get("ip_address", source_ips[0] if source_ips else source_device),
                             "platform": device_info.get("vendor", "unknown"),
                             "vendor": device_info.get("vendor", "unknown"),
                             "model": device_info.get("model", "unknown"),
@@ -265,8 +277,20 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                         }
                     
                     if target_device not in devices:
-                        # Get actual device info from fingerprints/reachable
-                        device_info = device_info_map.get(target_device, {})
+                        # Get actual device info from fingerprints using IP address
+                        # Extract Remote IPs from the edge if available
+                        target_ips = row.get("Remote_IPs", [])
+                        device_info = {}
+                        if target_ips:
+                            # Try to find fingerprint data by IP
+                            for ip in target_ips:
+                                if ip in device_info_map:
+                                    device_info = device_info_map[ip]
+                                    break
+                        
+                        # Fallback: try hostname lookup
+                        if not device_info:
+                            device_info = device_info_map.get(target_device, {})
                         
                         # Try to determine device type from hostname if not in device_info
                         device_type = "unknown"
@@ -283,7 +307,7 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                             
                         devices[target_device] = {
                             "hostname": target_device,
-                            "ip_address": device_info.get("ip_address", target_device),
+                            "ip_address": device_info.get("ip_address", target_ips[0] if target_ips else target_device),
                             "platform": device_info.get("vendor", "unknown"),
                             "vendor": device_info.get("vendor", "unknown"),
                             "model": device_info.get("model", "unknown"),
