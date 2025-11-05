@@ -34,7 +34,7 @@ logging.getLogger('nornir').setLevel(logging.WARNING)
 
 # Environment variables
 ARTIFACT_DIR = os.environ.get("ARTIFACT_DIR", "/tmp/network_discovery_artifacts")
-DEFAULT_PORTS = [int(p) for p in os.environ.get("DEFAULT_PORTS", "22,443").split(",")]
+DEFAULT_PORTS = [int(p) for p in os.environ.get("DEFAULT_PORTS", "22").split(",")]  # Default to SSH only for speed
 DEFAULT_CONCURRENCY = int(os.environ.get("DEFAULT_CONCURRENCY", "200"))
 DEFAULT_CONNECT_TIMEOUT = float(os.environ.get("CONNECT_TIMEOUT", "1.5"))
 # Also define CONNECT_TIMEOUT for backward compatibility
