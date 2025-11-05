@@ -385,12 +385,29 @@ async def _get_ssh_banner(ip: str, timeout: float = 2.0) -> Optional[str]:
         str or None: SSH banner or None if not available
     """
     try:
-        # Use asyncssh to get the banner
-        banner = await asyncio.wait_for(
-            asyncssh.get_server_banner(ip),
+        # Open a raw connection and read the SSH banner
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, 22),
             timeout=timeout
         )
-        return banner
+        
+        # Read the banner (SSH server sends it immediately)
+        banner_data = await asyncio.wait_for(
+            reader.read(200),
+            timeout=1.0
+        )
+        
+        # Close the connection
+        writer.close()
+        await writer.wait_closed()
+        
+        # Decode and return the banner
+        banner = banner_data.decode('utf-8', errors='ignore').strip()
+        if banner:
+            # Return only the first line (SSH version)
+            return banner.split('\n')[0].split('\r')[0]
+        return None
+        
     except asyncio.TimeoutError:
         logger.debug(f"SSH banner retrieval timed out for {ip}")
         return None
