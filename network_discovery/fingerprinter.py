@@ -315,7 +315,16 @@ async def _fingerprint_host(
         ports = host.get("ports", {})
         evidence = {}
         
-        # Check SSH (port 22) - always collect our own data
+        # Build protocols list based on open ports (not banner collection success)
+        protocols = []
+        if ports.get("22") == "open":
+            protocols.append("ssh")
+        if ports.get("443") == "open":
+            protocols.append("https")
+        if ports.get("830") == "open":
+            protocols.append("netconf")
+        
+        # Check SSH (port 22) - collect banner if available
         if ports.get("22") == "open":
             try:
                 ssh_banner = await _get_ssh_banner(ip)
@@ -324,7 +333,7 @@ async def _fingerprint_host(
             except Exception as e:
                 logger.debug(f"Failed to get SSH banner from {ip}: {str(e)}")
         
-        # Check HTTPS (port 443) - always collect our own data
+        # Check HTTPS (port 443) - collect TLS info if available
         if ports.get("443") == "open":
             try:
                 tls_info = await _get_tls_info(ip)
@@ -348,6 +357,10 @@ async def _fingerprint_host(
         
         # Infer device type from evidence
         inference = _infer_device_type(evidence)
+        
+        # Add protocols to inference (based on open ports, not banner success)
+        if inference:
+            inference["protocols"] = protocols
         
         # Build result
         result = {
@@ -514,12 +527,11 @@ def _infer_device_type(evidence: Dict) -> Dict:
         evidence: Evidence collected from the device
         
     Returns:
-        Dict: Inference with vendor, model, protocols and confidence
+        Dict: Inference with vendor, model, and confidence
     """
     inference = {
         "vendor": "unknown",
         "model": "unknown",
-        "protocols": [],
         "confidence": 0.0
     }
     
@@ -529,7 +541,6 @@ def _infer_device_type(evidence: Dict) -> Dict:
     
     # Check SSH banner
     if "ssh_banner" in evidence:
-        inference["protocols"].append("ssh")
         banner = evidence["ssh_banner"]
         
         for pattern, info in FINGERPRINT_DB["ssh_banners"].items():
@@ -544,7 +555,6 @@ def _infer_device_type(evidence: Dict) -> Dict:
     
     # Check HTTP server header
     if "http_server" in evidence:
-        inference["protocols"].append("https")
         server = evidence["http_server"]
         
         for pattern, info in FINGERPRINT_DB["http_server"].items():
@@ -573,7 +583,6 @@ def _infer_device_type(evidence: Dict) -> Dict:
     
     # Check SNMP sysDescr
     if "snmp_sysdescr" in evidence:
-        inference["protocols"].append("snmp")
         sysdescr = evidence["snmp_sysdescr"]
         
         for pattern, info in FINGERPRINT_DB["snmp_sysdescr"].items():
@@ -595,9 +604,6 @@ def _infer_device_type(evidence: Dict) -> Dict:
     if model_matches:
         top_model = max(model_matches.items(), key=lambda x: x[1])
         inference["model"] = top_model[0]
-    
-    # Deduplicate protocols
-    inference["protocols"] = list(set(inference["protocols"]))
     
     return inference
 
