@@ -154,7 +154,8 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
         # Get detailed interface properties
         logger.info("Retrieving interface properties from Batfish")
         try:
-            iface_df = bf.q.interfaceProperties(properties=["Node", "Interface", "Primary_Address", "Access_VLAN", "VRF", "Description", "Active", "Switchport_Mode"]).answer().frame()
+            # Batfish interfaceProperties expects property names as a comma-separated string
+            iface_df = bf.q.interfaceProperties(properties="Active,Primary_Address,Description,VLAN,VRF,Switchport_Mode").answer().frame()
             logger.info(f"Retrieved {len(iface_df)} interface records")
         except Exception as e:
             logger.warning(f"Failed to retrieve interface properties: {str(e)}")
