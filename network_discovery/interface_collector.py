@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pybatfish.client.session import Session
 
-from network_discovery.artifacts import get_artifact_path
+from network_discovery.config import get_job_dir
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -130,7 +130,7 @@ def collect_interface_data(job_id: str, network_name: str = None, snapshot_name:
         }
         
         # Save to artifact
-        artifact_path = get_artifact_path(job_id, "interfaces.json")
+        artifact_path = get_job_dir(job_id) / "interfaces.json"
         logger.info(f"Saving interface data to {artifact_path}")
         
         # Add timestamp
@@ -166,7 +166,7 @@ def get_interfaces_path(job_id: str) -> Path:
     Returns:
         Path to interfaces.json
     """
-    return get_artifact_path(job_id, "interfaces.json")
+    return get_job_dir(job_id) / "interfaces.json"
 
 
 def load_interface_data(job_id: str) -> Optional[Dict[str, Any]]:
