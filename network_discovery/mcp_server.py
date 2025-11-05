@@ -146,7 +146,7 @@ def create_server() -> FastMCP:
         Args:
             job_id: Job identifier
             targets_path: Optional path to targets file
-            ports: Optional ports to scan (default: [22] for SSH only - add 443 for HTTPS if needed)
+            ports: Optional ports to scan (default: [22, 443])
             concurrency: Number of concurrent scans (default: 100)
         
         Returns:
@@ -187,7 +187,7 @@ def create_server() -> FastMCP:
         Args:
             subnets: List of subnets to scan (CIDR notation, e.g., ["10.0.0.0/24", "192.168.1.0/24"])
             job_id: Optional job identifier (generated if not provided)
-            ports: Optional ports to scan (default: [22] for SSH only - add 443 for HTTPS if needed)
+            ports: Optional ports to scan (default: [22, 443])
             concurrency: Number of concurrent scans (default: 100)
         
         Returns:
