@@ -9,7 +9,7 @@ import os
 import sys
 import logging
 import uuid
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 
 from fastmcp import FastMCP, Context
 
