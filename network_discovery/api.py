@@ -149,6 +149,19 @@ class Credentials(BaseModel):
             result["enable_secret"] = self.enable_secret.get_secret_value()
         return result
 
+class CredentialChain(BaseModel):
+    """Chain of credentials to try in order until one succeeds."""
+    credentials: List[Credentials]
+    
+    class Config:
+        json_encoders = {
+            SecretStr: lambda v: "***MASKED***" if v else None
+        }
+    
+    def get_list_with_secrets(self) -> List[dict]:
+        """Get list of credential dicts with actual password values."""
+        return [cred.get_dict_with_secrets() for cred in self.credentials]
+
 class SeedRequest(BaseModel):
     seed_host: str
     credentials: Credentials
@@ -184,7 +197,7 @@ class DeepFingerprintRequest(BaseModel):
     
 class StateCollectorRequest(BaseModel):
     job_id: str
-    credentials: Credentials
+    credentials: Union[Credentials, CredentialChain]  # Accept single or chain
     concurrency: int = 25
     
 class DeviceStateUpdateRequest(BaseModel):
@@ -499,15 +512,25 @@ async def deep_fingerprint_devices(request: DeepFingerprintRequest):
 @app.post("/v1/state/collect", response_model=Dict)
 async def collect_device_states(request: StateCollectorRequest):
     """
-    Collect all device states in parallel.
+    Collect all device states in parallel with credential fallback support.
     
     This endpoint retrieves each device's running configuration in parallel and stores
     it as a separate JSON file under {job_dir}/state/{hostname}.json.
+    
+    Supports both single credentials and credential chains:
+    - Single: {"credentials": {"username": "admin", "password": "pass"}}
+    - Chain: {"credentials": {"credentials": [{"username": "admin", "password": "pass"}, {"username": "cisco", "password": "cisco"}]}}
     """
     try:
+        # Convert credentials to list format
+        if isinstance(request.credentials, CredentialChain):
+            creds = request.credentials.get_list_with_secrets()
+        else:
+            creds = [request.credentials.get_dict_with_secrets()]
+        
         result = await start_state_collector(
             request.job_id,
-            request.credentials.get_dict_with_secrets(),
+            creds,  # Pass as list
             request.concurrency
         )
         return result

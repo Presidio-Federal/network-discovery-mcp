@@ -392,26 +392,45 @@ def create_server() -> FastMCP:
     @mcp.tool
     async def collect_device_configs(
         job_id: str,
-        username: str,
-        password: str,
-        enable_secret: Optional[str] = None,
+        credentials: Union[Dict[str, str], List[Dict[str, str]]],
         concurrency: int = 25
     ) -> Dict[str, Any]:
-        """Collect device configurations using fingerprint data.
+        """Collect device configurations using fingerprint data with credential fallback support.
         
         This tool retrieves device configurations from all reachable devices
         and stores them in state files. The system automatically uses vendor
         information from the fingerprinting phase to select the correct commands.
         
+        **Credential Chain Support:**
+        You can now provide multiple sets of credentials that will be tried in order
+        until one succeeds. This is useful for networks with multiple device types
+        that use different authentication credentials.
+        
+        **Single Credential Example:**
+        ```
+        credentials = {"username": "admin", "password": "cisco123"}
+        ```
+        
+        **Credential Chain Example:**
+        ```
+        credentials = [
+            {"username": "admin", "password": "cisco123", "enable_secret": "enable123"},
+            {"username": "cisco", "password": "cisco"},
+            {"username": "root", "password": "juniper123"}
+        ]
+        ```
+        
         **How it works:**
         1. Reads fingerprints to determine each device's vendor
-        2. Uses vendor-specific commands automatically:
+        2. Tries each credential set in order until one succeeds
+        3. Uses vendor-specific commands automatically:
            - Cisco: "show running-config"
            - Arista: "show running-config"
            - Juniper: "show configuration | display set"
            - Palo Alto: "show config running"
-        3. Automatically enters enable mode for Cisco/Arista if needed
-        4. Saves configurations to state files
+        4. Automatically enters enable mode for Cisco/Arista if needed
+        5. Saves configurations to state files
+        6. Logs which credentials worked for each device
         
         **Note:** Platform detection is automatic from fingerprints.
         If you need to correct vendor identification first, run the
@@ -419,9 +438,8 @@ def create_server() -> FastMCP:
         
         Args:
             job_id: Job identifier
-            username: Username for SSH authentication
-            password: Password for SSH authentication
-            enable_secret: Enable password (optional, defaults to password if not provided)
+            credentials: Single credential dict OR list of credential dicts.
+                        Each dict should contain: username, password, optional enable_secret
             concurrency: Number of concurrent operations (default: 25)
             
         Returns:
@@ -430,20 +448,24 @@ def create_server() -> FastMCP:
                 "status": "completed",
                 "device_count": 42,
                 "success_count": 38,
-                "failed_count": 4
+                "failed_count": 4,
+                "credential_usage": {
+                    "admin": 30,
+                    "cisco": 5,
+                    "root": 3
+                }
             }
         """
         try:
-            credentials = {
-                "username": username,
-                "password": password
-            }
-            if enable_secret:
-                credentials["enable_secret"] = enable_secret
+            # Convert to list format for internal use
+            if isinstance(credentials, dict):
+                creds_list = [credentials]
+            else:
+                creds_list = credentials
             
             result = await start_state_collector(
                 job_id,
-                credentials,
+                creds_list,
                 concurrency
             )
             return result

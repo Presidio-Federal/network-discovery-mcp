@@ -281,18 +281,34 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                         if not device_info:
                             device_info = device_info_map.get(source_device, {})
                         
-                        # Try to determine device type from hostname if not in device_info
+                        # Determine device type from vendor/fingerprint data first, then hostname
+                        vendor = device_info.get("vendor", "").lower()
                         device_type = "unknown"
-                        if "switch" in source_device.lower():
-                            device_type = "switch"
-                        elif "router" in source_device.lower():
-                            device_type = "router"
-                        elif "core" in source_device.lower():
-                            device_type = "router"
-                        elif "edge" in source_device.lower():
-                            device_type = "router"
+                        
+                        if vendor:
+                            # Map vendor to device type
+                            if "cisco" in vendor:
+                                device_type = "cisco_xe"
+                            elif "arista" in vendor:
+                                device_type = "arista_eos"
+                            elif "juniper" in vendor:
+                                device_type = "juniper_junos"
+                            elif "palo alto" in vendor or "paloalto" in vendor:
+                                device_type = "paloalto_panos"
+                            else:
+                                device_type = vendor.replace(" ", "_").lower()
                         else:
-                            device_type = "cisco_xe"  # Default
+                            # Fallback to hostname-based guessing if no vendor info
+                            if "switch" in source_device.lower():
+                                device_type = "switch"
+                            elif "router" in source_device.lower():
+                                device_type = "router"
+                            elif "core" in source_device.lower():
+                                device_type = "router"
+                            elif "edge" in source_device.lower():
+                                device_type = "router"
+                            else:
+                                device_type = "cisco_xe"  # Default
                             
                         devices[source_device] = {
                             "hostname": source_device,
@@ -321,18 +337,34 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                         if not device_info:
                             device_info = device_info_map.get(target_device, {})
                         
-                        # Try to determine device type from hostname if not in device_info
+                        # Determine device type from vendor/fingerprint data first, then hostname
+                        vendor = device_info.get("vendor", "").lower()
                         device_type = "unknown"
-                        if "switch" in target_device.lower():
-                            device_type = "switch"
-                        elif "router" in target_device.lower():
-                            device_type = "router"
-                        elif "core" in target_device.lower():
-                            device_type = "router"
-                        elif "edge" in target_device.lower():
-                            device_type = "router"
+                        
+                        if vendor:
+                            # Map vendor to device type
+                            if "cisco" in vendor:
+                                device_type = "cisco_xe"
+                            elif "arista" in vendor:
+                                device_type = "arista_eos"
+                            elif "juniper" in vendor:
+                                device_type = "juniper_junos"
+                            elif "palo alto" in vendor or "paloalto" in vendor:
+                                device_type = "paloalto_panos"
+                            else:
+                                device_type = vendor.replace(" ", "_").lower()
                         else:
-                            device_type = "cisco_xe"  # Default
+                            # Fallback to hostname-based guessing if no vendor info
+                            if "switch" in target_device.lower():
+                                device_type = "switch"
+                            elif "router" in target_device.lower():
+                                device_type = "router"
+                            elif "core" in target_device.lower():
+                                device_type = "router"
+                            elif "edge" in target_device.lower():
+                                device_type = "router"
+                            else:
+                                device_type = "cisco_xe"  # Default
                             
                         devices[target_device] = {
                             "hostname": target_device,

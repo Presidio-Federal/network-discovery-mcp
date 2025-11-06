@@ -265,8 +265,8 @@ services:
     ports:
       - "8080:8080"                         # HTTP port (optional, for health checks)
       - "443:443"                           # HTTPS port (required)
-    volumes:
-      - ./artifacts:/artifacts
+volumes:
+  - ./artifacts:/artifacts
       # Mount your SSL certificates (REQUIRED for HTTPS):
       - /path/to/your/fullchain.pem:/certs/fullchain.pem:ro
       - /path/to/your/privkey.pem:/certs/privkey.pem:ro
@@ -278,7 +278,7 @@ services:
   batfish:
     image: batfish/batfish:latest
     container_name: batfish
-    ports:
+ports:
       - "9996:9996"
       - "9997:9997"
     networks:
@@ -1391,7 +1391,7 @@ services:
       - BATFISH_HOST=batfish
     ports:
       - "8000:8000"
-    volumes:
+volumes:
       - ./artifacts:/artifacts
 ```
 
@@ -1486,7 +1486,7 @@ Network Discovery MCP consists of six main modules:
 
 ```
 network-discovery-mcp/
-├── network_discovery/
+  ├── network_discovery/
 │   ├── __main__.py              # Entry point (REST API or MCP mode)
 │   ├── api.py                   # FastAPI REST endpoints
 │   ├── mcp_server.py            # MCP tools implementation
@@ -1524,12 +1524,12 @@ Each discovery job creates a directory structure:
 ├── state/
 │   ├── {hostname1}.json         # Device configurations
 │   ├── {hostname2}.json
-│   └── ...
+  │   └── ...
 ├── batfish_snapshot/
 │   └── configs/
 │       ├── {hostname1}.cfg      # Batfish-format configs
 │       ├── {hostname2}.cfg
-│       └── ...
+  │       └── ...
 ├── topology.json                # Topology graph data
 ├── topology.html                # Interactive visualization
 ├── status.json                  # Job status tracking
@@ -1575,7 +1575,7 @@ curl -X POST http://localhost:8000/v1/credentials/validate \
   -H "Content-Type: application/json" \
   -d '{
     "seed_host": "192.168.1.1",
-    "username": "admin",
+      "username": "admin",
     "password": "your_password",
     "platform": "cisco_ios"
   }'

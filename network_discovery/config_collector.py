@@ -34,6 +34,44 @@ from network_discovery.artifacts import (
 from network_discovery.config import DEFAULT_CONCURRENCY
 from network_discovery.utils import retry_with_backoff, with_timeout
 
+# SSH connection options for legacy device support
+# Supports older devices with deprecated algorithms (ssh-rsa, etc.)
+LEGACY_SSH_OPTIONS = {
+    'server_host_key_algs': [
+        'ssh-rsa',              # Legacy (required for ASAv, old IOS)
+        'rsa-sha2-256',         # Modern RSA
+        'rsa-sha2-512',
+        'ssh-ed25519',          # Modern EdDSA
+        'ecdsa-sha2-nistp256',  # Modern ECDSA
+        'ecdsa-sha2-nistp384',
+        'ecdsa-sha2-nistp521'
+    ],
+    'kex_algs': [
+        'diffie-hellman-group-exchange-sha256',
+        'diffie-hellman-group14-sha256',
+        'diffie-hellman-group16-sha512',
+        'diffie-hellman-group18-sha512',
+        'diffie-hellman-group14-sha1',   # Legacy (required for old devices)
+        'diffie-hellman-group1-sha1'     # Very old (required for very old devices)
+    ],
+    'encryption_algs': [
+        'aes128-ctr',
+        'aes192-ctr',
+        'aes256-ctr',
+        'aes128-gcm@openssh.com',
+        'aes256-gcm@openssh.com',
+        'aes128-cbc',            # Legacy
+        'aes192-cbc',            # Legacy
+        'aes256-cbc',            # Legacy
+        '3des-cbc'               # Very old (required for very old devices)
+    ],
+    'mac_algs': [
+        'hmac-sha2-256',
+        'hmac-sha2-512',
+        'hmac-sha1'              # Legacy
+    ]
+}
+
 # Configure logger with more detailed format
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # Set to DEBUG level for maximum verbosity
@@ -171,19 +209,28 @@ def get_collection_status(job_id: str) -> Dict:
     
     return COLLECTION_STATUS[job_id]
 
-async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT_CONCURRENCY) -> Dict:
+async def collect_all_state(job_id: str, creds: Union[Dict, List[Dict]], concurrency: int = DEFAULT_CONCURRENCY) -> Dict:
     """
     Collect configuration state from all devices in parallel.
     
     Args:
         job_id: Job identifier
-        creds: Dictionary with authentication credentials
+        creds: Single credential dict OR list of credential dicts to try in order
         concurrency: Maximum concurrent connections
         
     Returns:
         Dict: Collection results with job_id and status
     """
     logger.info(f"Starting configuration collection for job {job_id} with concurrency {concurrency}")
+    
+    # Convert single creds to list for uniform handling
+    if isinstance(creds, dict):
+        creds_list = [creds]
+        logger.info("Using single credential set")
+    else:
+        creds_list = creds
+        logger.info(f"Using credential chain with {len(creds_list)} credential sets")
+    
     start_time = time.time()
     
     # Initialize collection status
@@ -299,7 +346,7 @@ async def collect_all_state(job_id: str, creds: Dict, concurrency: int = DEFAULT
         logger.info(f"Starting parallel collection for {len(devices)} devices with concurrency {concurrency}")
         semaphore = asyncio.Semaphore(concurrency)
         collection_tasks = [
-            _collect_device_config(device, creds, job_id, semaphore)
+            _collect_device_config(device, creds_list, job_id, semaphore)
             for device in devices
         ]
         
@@ -613,24 +660,159 @@ async def get_device_state(job_id: str, hostname: str) -> Dict:
             "error": str(e)
         }
 
+async def _try_credential_chain(
+    ip: str,
+    hostname: str,
+    vendor: str,
+    protocols: List[str],
+    creds_list: List[Dict],
+    job_id: str
+) -> tuple:
+    """
+    Try multiple credentials in order until one succeeds.
+    
+    Args:
+        ip: Device IP address
+        hostname: Device hostname
+        vendor: Device vendor
+        protocols: List of available protocols (ssh, https, netconf)
+        creds_list: List of credential dicts to try in order
+        job_id: Job identifier
+        
+    Returns:
+        Tuple of (config_string, successful_creds_dict, protocol_used) or (None, None, None)
+    """
+    for idx, creds in enumerate(creds_list, 1):
+        logger.info(f"Trying credential set #{idx}/{len(creds_list)} for {hostname} ({ip}) - username: {creds.get('username')}")
+        try:
+            config, protocol_used = await _attempt_single_collection(ip, hostname, vendor, protocols, creds, job_id)
+            if config:
+                logger.info(f"✅ SUCCESS: Credential set #{idx} worked for {hostname} ({ip}) via {protocol_used}")
+                return config, creds, protocol_used
+        except NetmikoAuthenticationException as e:
+            logger.warning(f"❌ AUTH FAILED: Credential set #{idx} auth failed for {hostname} ({ip}): {str(e)}")
+            # Continue to next credential on auth failure
+            continue
+        except asyncssh.PermissionDenied as e:
+            logger.warning(f"❌ AUTH FAILED: Credential set #{idx} SSH auth failed for {hostname} ({ip}): {str(e)}")
+            # Continue to next credential on auth failure
+            continue
+        except Exception as e:
+            # For non-auth errors, log but continue trying
+            logger.debug(f"Credential set #{idx} failed for {hostname} ({ip}) with non-auth error: {str(e)}")
+            # If it's the last credential, raise the error
+            if idx == len(creds_list):
+                raise
+            # Otherwise continue to next credential
+            continue
+    
+    logger.error(f"❌ ALL FAILED: All {len(creds_list)} credential sets failed for {hostname} ({ip})")
+    return None, None, None
+
+async def _attempt_single_collection(
+    ip: str,
+    hostname: str,
+    vendor: str,
+    protocols: List[str],
+    creds: Dict,
+    job_id: str
+) -> tuple:
+    """
+    Single attempt to collect config with given credentials.
+    
+    Args:
+        ip: Device IP address
+        hostname: Device hostname
+        vendor: Device vendor
+        protocols: List of available protocols
+        creds: Single credential dict
+        job_id: Job identifier
+        
+    Returns:
+        Tuple of (config_string, protocol_used) or (None, None)
+    """
+    config = None
+    protocol_used = None
+    
+    # Try Netmiko first (for vendors that support it)
+    if vendor in VENDOR_TO_NETMIKO_TYPE and "ssh" in protocols:
+        try:
+            logger.debug(f"Attempting Netmiko collection for {hostname} ({ip})")
+            config = await _collect_via_netmiko(ip, creds, vendor)
+            if config:
+                protocol_used = "netmiko"
+                logger.info(f"Netmiko collection successful for {hostname} ({ip})")
+                return config, protocol_used
+        except Exception as e:
+            logger.debug(f"Netmiko failed for {hostname} ({ip}): {str(e)}")
+            # Re-raise auth exceptions
+            if isinstance(e, (NetmikoAuthenticationException, asyncssh.PermissionDenied)):
+                raise
+    
+    # Try raw SSH as fallback
+    if "ssh" in protocols:
+        try:
+            logger.debug(f"Attempting raw SSH collection for {hostname} ({ip})")
+            config = await _collect_via_ssh(ip, creds, vendor)
+            if config:
+                protocol_used = "ssh"
+                logger.info(f"SSH collection successful for {hostname} ({ip})")
+                return config, protocol_used
+        except Exception as e:
+            logger.debug(f"SSH failed for {hostname} ({ip}): {str(e)}")
+            if isinstance(e, (asyncssh.PermissionDenied)):
+                raise
+    
+    # Try NETCONF if SSH failed and it's supported
+    if vendor in ["Juniper", "Cisco"] and "netconf" in protocols:
+        try:
+            logger.debug(f"Attempting NETCONF collection for {hostname} ({ip})")
+            config = await _collect_via_netconf(ip, creds, vendor)
+            if config:
+                protocol_used = "netconf"
+                logger.info(f"NETCONF collection successful for {hostname} ({ip})")
+                return config, protocol_used
+        except Exception as e:
+            logger.debug(f"NETCONF failed for {hostname} ({ip}): {str(e)}")
+    
+    # Try HTTPS as last resort
+    if "https" in protocols:
+        try:
+            logger.debug(f"Attempting HTTPS collection for {hostname} ({ip})")
+            config = await _collect_via_https(ip, creds, vendor)
+            if config:
+                protocol_used = "https"
+                logger.info(f"HTTPS collection successful for {hostname} ({ip})")
+                return config, protocol_used
+        except Exception as e:
+            logger.debug(f"HTTPS failed for {hostname} ({ip}): {str(e)}")
+    
+    return None, None
+
 async def _collect_device_config(
     device: Dict,
-    creds: Dict,
+    creds: Union[Dict, List[Dict]],
     job_id: str,
     semaphore: asyncio.Semaphore
 ) -> Dict:
     """
-    Collect configuration from a single device.
+    Collect configuration from a single device with credential chain support.
     
     Args:
         device: Device information
-        creds: Authentication credentials
+        creds: Single credential dict OR list of credential dicts to try in order
         job_id: Job identifier
         semaphore: Concurrency semaphore
         
     Returns:
         Dict: Collection results
     """
+    # Convert single creds to list for uniform handling
+    if isinstance(creds, dict):
+        creds_list = [creds]
+    else:
+        creds_list = creds
+    
     ip = device["ip"]
     vendor = device["vendor"]
     hostname = device.get("hostname", ip)
@@ -666,69 +848,19 @@ async def _collect_device_config(
             COLLECTION_STATUS[job_id]["device_statuses"][hostname] = device_status
         
         try:
-            # Determine collection method based on protocols and vendor
-            config = None
-            protocol_used = None
-            
-            # Try SSH first if available
-            if "ssh" in protocols:
-                # Try Netmiko first for supported vendors (handles vendor quirks)
-                if vendor in VENDOR_TO_NETMIKO_TYPE:
-                    try:
-                        logger.info(f"Attempting Netmiko (SSH) collection for {hostname} ({ip}) vendor={vendor}")
-                        config = await _collect_via_netmiko(ip, creds, vendor)
-                        protocol_used = "ssh_netmiko"
-                        logger.info(f"Netmiko collection successful for {hostname} ({ip})")
-                    except Exception as e:
-                        logger.warning(f"Netmiko collection failed for {hostname} ({ip}): {str(e)}")
-                        logger.debug(traceback.format_exc())
-                        
-                        # Fall back to raw AsyncSSH
-                        try:
-                            logger.info(f"Falling back to raw AsyncSSH for {hostname} ({ip})")
-                            config = await _collect_via_ssh(ip, creds, vendor)
-                            protocol_used = "ssh_asyncssh"
-                            logger.info(f"AsyncSSH collection successful for {hostname} ({ip})")
-                        except Exception as e2:
-                            logger.warning(f"AsyncSSH collection also failed for {hostname} ({ip}): {str(e2)}")
-                            logger.debug(traceback.format_exc())
-                else:
-                    # Vendor not in Netmiko mapping, use AsyncSSH directly
-                    try:
-                        logger.info(f"Attempting AsyncSSH collection for {hostname} ({ip}) vendor={vendor}")
-                        config = await _collect_via_ssh(ip, creds, vendor)
-                        protocol_used = "ssh_asyncssh"
-                        logger.info(f"AsyncSSH collection successful for {hostname} ({ip})")
-                    except Exception as e:
-                        logger.warning(f"AsyncSSH collection failed for {hostname} ({ip}): {str(e)}")
-                        logger.debug(traceback.format_exc())
-            
-            # Try NETCONF if SSH failed and it's supported
-            if not config and vendor in ["Juniper", "Cisco"]:
-                try:
-                    logger.info(f"Attempting NETCONF collection for {hostname} ({ip})")
-                    config = await _collect_via_netconf(ip, creds, vendor)
-                    protocol_used = "netconf"
-                    logger.info(f"NETCONF collection successful for {hostname} ({ip})")
-                except Exception as e:
-                    logger.warning(f"NETCONF collection failed for {hostname} ({ip}): {str(e)}")
-                    logger.debug(traceback.format_exc())
-            
-            # Try RESTCONF as last resort for Cisco devices
-            if not config and vendor == "Cisco" and "https" in protocols:
-                try:
-                    logger.info(f"Attempting RESTCONF collection for {hostname} ({ip})")
-                    config = await _collect_via_restconf(ip, creds)
-                    protocol_used = "restconf"
-                    logger.info(f"RESTCONF collection successful for {hostname} ({ip})")
-                except Exception as e:
-                    logger.warning(f"RESTCONF collection failed for {hostname} ({ip}): {str(e)}")
-                    logger.debug(traceback.format_exc())
+            # Try credential chain
+            logger.info(f"Attempting collection with {len(creds_list)} credential set(s)")
+            config, successful_creds, protocol_used = await _try_credential_chain(
+                ip, hostname, vendor, protocols, creds_list, job_id
+            )
             
             if not config:
-                error_msg = f"Failed to collect configuration from {hostname} ({ip}) using any method"
+                error_msg = f"Failed to collect configuration from {hostname} ({ip}) - all {len(creds_list)} credential sets failed"
                 logger.error(error_msg)
                 raise Exception(error_msg)
+            
+            # Log which credentials worked
+            logger.info(f"✅ Config collected from {hostname} ({ip}) using credential username={successful_creds.get('username')} via {protocol_used}")
             
             # Extract actual hostname from config if possible
             actual_hostname = extract_hostname_from_config(config, vendor, hostname)
@@ -742,7 +874,8 @@ async def _collect_device_config(
                 "vendor": vendor,
                 "collected_at": datetime.utcnow().isoformat() + "Z",
                 "protocol": protocol_used,
-                "running_config": config
+                "running_config": config,
+                "successful_username": successful_creds.get('username')  # Track which creds worked
             }
             
             # Save state data to JSON
@@ -968,7 +1101,8 @@ async def _collect_via_ssh(ip: str, creds: Dict, vendor: str) -> str:
                 username=creds.get("username"),
                 password=creds.get("password"),
                 known_hosts=None,
-                connect_timeout=30
+                connect_timeout=30,
+                **LEGACY_SSH_OPTIONS  # Support legacy devices
             ),
             timeout=35,
             error_message=f"SSH connection to {host}:{port} timed out"

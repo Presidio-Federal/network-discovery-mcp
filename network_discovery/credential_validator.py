@@ -13,6 +13,44 @@ import asyncssh
 
 logger = logging.getLogger(__name__)
 
+# SSH connection options for legacy device support
+# Supports older devices with deprecated algorithms (ssh-rsa, etc.)
+LEGACY_SSH_OPTIONS = {
+    'server_host_key_algs': [
+        'ssh-rsa',              # Legacy (required for ASAv, old IOS)
+        'rsa-sha2-256',         # Modern RSA
+        'rsa-sha2-512',
+        'ssh-ed25519',          # Modern EdDSA
+        'ecdsa-sha2-nistp256',  # Modern ECDSA
+        'ecdsa-sha2-nistp384',
+        'ecdsa-sha2-nistp521'
+    ],
+    'kex_algs': [
+        'diffie-hellman-group-exchange-sha256',
+        'diffie-hellman-group14-sha256',
+        'diffie-hellman-group16-sha512',
+        'diffie-hellman-group18-sha512',
+        'diffie-hellman-group14-sha1',   # Legacy (required for old devices)
+        'diffie-hellman-group1-sha1'     # Very old (required for very old devices)
+    ],
+    'encryption_algs': [
+        'aes128-ctr',
+        'aes192-ctr',
+        'aes256-ctr',
+        'aes128-gcm@openssh.com',
+        'aes256-gcm@openssh.com',
+        'aes128-cbc',            # Legacy
+        'aes192-cbc',            # Legacy
+        'aes256-cbc',            # Legacy
+        '3des-cbc'               # Very old (required for very old devices)
+    ],
+    'mac_algs': [
+        'hmac-sha2-256',
+        'hmac-sha2-512',
+        'hmac-sha1'              # Legacy
+    ]
+}
+
 # Vendor-specific test commands (lightweight commands that verify access)
 VALIDATION_COMMANDS = {
     "cisco_ios": "show version | include Software",
@@ -87,7 +125,8 @@ async def validate_credentials(
                 username=username,
                 password=password,
                 known_hosts=None,
-                connect_timeout=timeout
+                connect_timeout=timeout,
+                **LEGACY_SSH_OPTIONS  # Support legacy devices
             ),
             timeout=timeout + 5
         )
