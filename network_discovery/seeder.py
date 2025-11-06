@@ -326,7 +326,11 @@ def _collect_from_device(
                         "password": creds.get("password"),
                         "port": host_obj.port or 22,
                         "session_log": "netmiko_session.log",  # Log the session for debugging
-                        "verbose": True
+                        "verbose": True,
+                        # Legacy SSH algorithm support (for old devices)
+                        "allow_auto_change": True,
+                        "ssh_config_file": None,  # Don't use SSH config
+                        "disabled_algorithms": {},  # Allow all algorithms
                     }
                     
                     logger.info(f"Connection parameters: device_type={connection_params['device_type']}, host={connection_params['host']}, port={connection_params['port']}, username={connection_params['username']}")
