@@ -16,7 +16,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Union
 
 import asyncssh
 from netmiko import ConnectHandler
