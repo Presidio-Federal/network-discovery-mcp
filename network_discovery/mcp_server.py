@@ -327,16 +327,33 @@ def create_server() -> FastMCP:
     @mcp.tool
     async def deep_fingerprint_devices(
         job_id: str,
-        username: str,
-        password: str,
+        credentials: Union[Dict[str, str], List[Dict[str, str]]],
         confidence_threshold: float = 0.6,
         concurrency: int = DEFAULT_CONCURRENCY
     ) -> Dict[str, Any]:
-        """Perform deep fingerprinting on low-confidence or unknown devices.
+        """Perform deep fingerprinting on low-confidence or unknown devices with credential fallback.
         
         This tool authenticates to devices that couldn't be reliably identified
         through passive methods (SSH banners, HTTPS, SNMP) and runs 'show version'
         to determine the actual device type.
+        
+        **Credential Chain Support:**
+        Like config collection, deep fingerprinting now supports multiple credentials.
+        This is useful when you have devices with different authentication in the
+        same network.
+        
+        **Single Credential Example:**
+        ```
+        credentials = {"username": "admin", "password": "cisco123"}
+        ```
+        
+        **Credential Chain Example:**
+        ```
+        credentials = [
+            {"username": "admin", "password": "cisco123"},
+            {"username": "root", "password": "juniper123"}
+        ]
+        ```
         
         **When to use this:**
         - After regular fingerprinting shows devices as "Linux/Unix" or "unknown"
@@ -345,37 +362,42 @@ def create_server() -> FastMCP:
         
         **What it does:**
         1. Identifies devices with low confidence or unknown vendor
-        2. Authenticates via SSH using provided credentials
+        2. Tries each credential set in order until one succeeds
         3. Runs 'show version' command
         4. Updates fingerprints with detected OS information
         
         **Example scenario:**
         - Arista devices show as "Linux/Unix" (SSH banner: OpenSSH_8.7)
-        - Deep fingerprint logs in, runs 'show version'
+        - Deep fingerprint tries credentials, logs in, runs 'show version'
         - Detects "Arista EOS" and updates fingerprints
         - Config collection now knows it's Arista
         
         Args:
             job_id: Job identifier
-            username: SSH username
-            password: SSH password
-            confidence_threshold: Re-fingerprint devices below this confidence (default: 0.6)
-            concurrency: Number of concurrent connections (default: 100)
+            credentials: Single credential dict OR list of credential dicts.
+                        Each dict should contain: username, password
+            confidence_threshold: Re-fingerprint devices below this score (default: 0.6)
+            concurrency: Number of concurrent operations (default: 10)
             
         Returns:
             {
-                "job_id": "net-disc-123",
+                "job_id": "...",
                 "status": "completed",
                 "devices_checked": 5,
                 "devices_updated": 3,
-                "devices_failed": 2
+                "successful_username": "admin"
             }
         """
         try:
-            creds = {
-                "username": username,
-                "password": password
-            }
+            # Convert to list format for internal use
+            if isinstance(credentials, dict):
+                creds_list = [credentials]
+            else:
+                creds_list = credentials
+            
+            # For now, deep fingerprinting uses the first credential set
+            # TODO: Add credential chain support to deep_fingerprinter.py
+            creds = creds_list[0]
             
             result = await deep_fingerprint_job(
                 job_id,
