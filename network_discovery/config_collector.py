@@ -664,6 +664,7 @@ async def _try_credential_chain(
     ip: str,
     hostname: str,
     vendor: str,
+    model: str,
     protocols: List[str],
     creds_list: List[Dict],
     job_id: str
@@ -685,7 +686,7 @@ async def _try_credential_chain(
     for idx, creds in enumerate(creds_list, 1):
         logger.info(f"Trying credential set #{idx}/{len(creds_list)} for {hostname} ({ip}) - username: {creds.get('username')}")
         try:
-            config, protocol_used = await _attempt_single_collection(ip, hostname, vendor, protocols, creds, job_id)
+            config, protocol_used = await _attempt_single_collection(ip, hostname, vendor, model, protocols, creds, job_id)
             if config:
                 logger.info(f"✅ SUCCESS: Credential set #{idx} worked for {hostname} ({ip}) via {protocol_used}")
                 return config, creds, protocol_used
@@ -713,6 +714,7 @@ async def _attempt_single_collection(
     ip: str,
     hostname: str,
     vendor: str,
+    model: str,
     protocols: List[str],
     creds: Dict,
     job_id: str
@@ -734,11 +736,14 @@ async def _attempt_single_collection(
     config = None
     protocol_used = None
     
+    # Detect if this is a Cisco ASA (needs special handling)
+    is_asa = (vendor == "Cisco" and "ASA" in model.upper())
+    
     # Try Netmiko first (for vendors that support it)
     if vendor in VENDOR_TO_NETMIKO_TYPE and "ssh" in protocols:
         try:
-            logger.debug(f"Attempting Netmiko collection for {hostname} ({ip})")
-            config = await _collect_via_netmiko(ip, creds, vendor)
+            logger.debug(f"Attempting Netmiko collection for {hostname} ({ip}){' (ASA mode)' if is_asa else ''}")
+            config = await _collect_via_netmiko(ip, creds, vendor, model)
             if config:
                 protocol_used = "netmiko"
                 logger.info(f"Netmiko collection successful for {hostname} ({ip})")
@@ -815,6 +820,7 @@ async def _collect_device_config(
     
     ip = device["ip"]
     vendor = device["vendor"]
+    model = device.get("model", "")  # Get model for ASA detection
     hostname = device.get("hostname", ip)
     protocols = device.get("protocols", [])
     
@@ -851,7 +857,7 @@ async def _collect_device_config(
             # Try credential chain
             logger.info(f"Attempting collection with {len(creds_list)} credential set(s)")
             config, successful_creds, protocol_used = await _try_credential_chain(
-                ip, hostname, vendor, protocols, creds_list, job_id
+                ip, hostname, vendor, model, protocols, creds_list, job_id
             )
             
             if not config:
@@ -953,7 +959,7 @@ async def _collect_device_config(
                 "elapsed_time": f"{elapsed_time:.2f}s"
             }
 
-async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str) -> str:
+async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "") -> str:
     """
     Collect configuration via Netmiko (handles vendor-specific quirks).
     
@@ -982,9 +988,14 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str) -> str:
         port = 22
     
     # Get Netmiko device type
-    device_type = VENDOR_TO_NETMIKO_TYPE.get(vendor)
-    if not device_type:
-        raise Exception(f"Vendor '{vendor}' not supported by Netmiko. Supported vendors: {list(VENDOR_TO_NETMIKO_TYPE.keys())}")
+    # Special case: Cisco ASA needs cisco_asa device type
+    if vendor == "Cisco" and "ASA" in model.upper():
+        device_type = "cisco_asa"
+        logger.debug(f"Detected Cisco ASA, using device_type='cisco_asa'")
+    else:
+        device_type = VENDOR_TO_NETMIKO_TYPE.get(vendor)
+        if not device_type:
+            raise Exception(f"Vendor '{vendor}' not supported by Netmiko. Supported vendors: {list(VENDOR_TO_NETMIKO_TYPE.keys())}")
     
     # Get the command for this vendor
     command = CONFIG_COMMANDS.get(vendor, DEFAULT_CONFIG_COMMAND)
@@ -999,6 +1010,16 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str) -> str:
             # Use enable_secret if provided, otherwise fall back to password
             enable_password = creds.get("enable_secret", creds.get("password"))
             
+            # ASA needs longer timeouts due to slow prompt detection
+            if device_type == "cisco_asa":
+                timeout = 60
+                session_timeout = 120
+                banner_timeout = 30
+            else:
+                timeout = 30
+                session_timeout = 60
+                banner_timeout = 15
+            
             device_params = {
                 'device_type': device_type,
                 'host': host,
@@ -1006,10 +1027,11 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str) -> str:
                 'username': creds.get("username"),
                 'password': creds.get("password"),
                 'secret': enable_password,  # Enable password
-                'timeout': 30,
-                'session_timeout': 60,
-                'banner_timeout': 15,
+                'timeout': timeout,
+                'session_timeout': session_timeout,
+                'banner_timeout': banner_timeout,
                 'conn_timeout': 30,
+                'global_delay_factor': 2 if device_type == "cisco_asa" else 1,  # ASA is slower
             }
             
             with ConnectHandler(**device_params) as net_connect:

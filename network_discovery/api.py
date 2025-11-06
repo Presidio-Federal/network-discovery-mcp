@@ -191,7 +191,7 @@ class FingerprintRequest(BaseModel):
 
 class DeepFingerprintRequest(BaseModel):
     job_id: str
-    credentials: Credentials
+    credentials: Union[Credentials, CredentialChain]  # Accept single or chain
     confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0, description="Re-fingerprint devices below this confidence threshold")
     concurrency: int = DEFAULT_CONCURRENCY
     
@@ -490,7 +490,11 @@ async def deep_fingerprint_devices(request: DeepFingerprintRequest):
     ```
     """
     try:
-        creds = request.credentials.get_dict_with_secrets()
+        # Convert credentials to dict format (use first if chain provided)
+        if isinstance(request.credentials, CredentialChain):
+            creds = request.credentials.get_list_with_secrets()[0]  # Use first for now
+        else:
+            creds = request.credentials.get_dict_with_secrets()
         
         result = await deep_fingerprint_job(
             request.job_id,
