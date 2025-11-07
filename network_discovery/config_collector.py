@@ -1012,13 +1012,17 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
             
             # ASA needs longer timeouts due to slow prompt detection
             if device_type == "cisco_asa":
-                timeout = 60
-                session_timeout = 120
-                banner_timeout = 30
+                timeout = 120  # Increased from 60
+                session_timeout = 180  # Increased from 120
+                banner_timeout = 45  # Increased from 30
+                read_timeout = 120  # Explicit read timeout
+                global_delay = 4  # Increased from 2
             else:
                 timeout = 30
                 session_timeout = 60
                 banner_timeout = 15
+                read_timeout = 60
+                global_delay = 1
             
             device_params = {
                 'device_type': device_type,
@@ -1031,7 +1035,9 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                 'session_timeout': session_timeout,
                 'banner_timeout': banner_timeout,
                 'conn_timeout': 30,
-                'global_delay_factor': 2 if device_type == "cisco_asa" else 1,  # ASA is slower
+                'global_delay_factor': global_delay,
+                'read_timeout_override': read_timeout,  # ASA needs this
+                'fast_cli': False if device_type == "cisco_asa" else True,  # Disable fast_cli for ASA
             }
             
             with ConnectHandler(**device_params) as net_connect:
@@ -1051,7 +1057,19 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                 # Netmiko automatically handles:
                 # - Terminal length 0 (disable paging)
                 # - Timing and prompts
-                config = net_connect.send_command(command, read_timeout=90)
+                
+                # ASA needs special handling - use longer read timeout and expect_string
+                if device_type == "cisco_asa":
+                    logger.debug(f"Using ASA-specific command handling with extended timeout")
+                    config = net_connect.send_command(
+                        command,
+                        read_timeout=180,  # Very long timeout for ASA
+                        expect_string=r'#',  # Expect # prompt
+                        delay_factor=4  # Extra delays between commands
+                    )
+                else:
+                    config = net_connect.send_command(command, read_timeout=90)
+                
                 return config
         
         # Run in executor to avoid blocking
