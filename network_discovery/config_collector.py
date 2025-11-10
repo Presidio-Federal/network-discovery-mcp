@@ -123,14 +123,38 @@ def extract_hostname_from_config(config: str, vendor: str, default_hostname: str
         str: Extracted hostname or default_hostname if extraction fails
     """
     try:
+        logger.debug(f"Attempting to extract hostname from config. Vendor: {vendor}, Default: {default_hostname}")
+        
         # Different vendors have different hostname formats
         if vendor == "Cisco" or vendor == "Arista":
             # Look for "hostname <name>" in config
+            # Handle various formats: "hostname <name>", ": hostname <name>", etc.
             for line in config.splitlines():
-                if line.strip().startswith("hostname "):
-                    hostname = line.strip().split("hostname ", 1)[1].strip()
+                line_stripped = line.strip()
+                
+                # Check for standard format: "hostname <name>"
+                if line_stripped.startswith("hostname "):
+                    hostname = line_stripped.split("hostname ", 1)[1].strip()
                     if hostname:
+                        logger.info(f"Extracted hostname from config: {hostname} (format: 'hostname <name>')")
                         return hostname
+                
+                # Check for format with colon prefix (ASA output format): ": hostname <name>"
+                if line_stripped.startswith(": hostname "):
+                    hostname = line_stripped.split(": hostname ", 1)[1].strip()
+                    if hostname:
+                        logger.info(f"Extracted hostname from config: {hostname} (format: ': hostname <name>')")
+                        return hostname
+                
+                # Check for any line containing "hostname" keyword (fallback)
+                if "hostname " in line_stripped and not line_stripped.startswith("!"):
+                    # Try to extract hostname after "hostname" keyword
+                    parts = line_stripped.split("hostname ", 1)
+                    if len(parts) > 1:
+                        hostname = parts[1].split()[0] if parts[1].split() else None
+                        if hostname:
+                            logger.info(f"Extracted hostname from config: {hostname} (format: fallback pattern)")
+                            return hostname
         
         elif vendor == "Juniper":
             # Look for "set system host-name <name>" in config
@@ -166,6 +190,8 @@ def extract_hostname_from_config(config: str, vendor: str, default_hostname: str
         # Add more vendor-specific hostname extraction as needed
         
         # If we couldn't extract the hostname, use the default
+        logger.warning(f"Could not extract hostname from config for vendor {vendor}. Using default: {default_hostname}")
+        logger.debug(f"Config preview (first 500 chars): {config[:500]}")
         return default_hostname
     except Exception as e:
         # If any error occurs during extraction, use the default hostname

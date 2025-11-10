@@ -509,7 +509,7 @@ def create_server() -> FastMCP:
             hostname: Device hostname
         """
         try:
-            result = get_device_state(job_id, hostname)
+            result = await get_device_state(job_id, hostname)
             return result
         except Exception as e:
             logger.error(f"Error in get_device_config tool: {str(e)}")
