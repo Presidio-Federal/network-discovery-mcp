@@ -691,6 +691,37 @@ def create_server() -> FastMCP:
             return {"error": str(e), "success": False}
     
     @mcp.tool
+    async def build_network_graph(
+        job_id: str
+    ) -> Dict[str, Any]:
+        """Build comprehensive network graph including both network devices and endpoints.
+        
+        This tool creates a complete network graph by:
+        1. Loading network devices from Batfish topology
+        2. Adding endpoints (servers, workstations) from fingerprints
+        3. Inferring endpoint connections using subnet matching
+        4. Organizing devices by subnets
+        
+        The graph is saved as network_graph.json artifact and includes:
+        - All network devices (routers, switches, firewalls)
+        - All discovered endpoints (servers, workstations, printers)
+        - Physical connections (from device configs)
+        - Inferred connections (endpoints to network devices)
+        - Subnet organization
+        
+        Args:
+            job_id: Job identifier
+        """
+        try:
+            from network_discovery.network_graph_builder import build_network_graph as build_graph
+            
+            result = await build_graph(job_id)
+            return result
+        except Exception as e:
+            logger.error(f"Error in build_network_graph tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    @mcp.tool
     async def get_artifact_content(
         job_id: str,
         filename: str

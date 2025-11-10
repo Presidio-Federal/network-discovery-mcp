@@ -102,6 +102,14 @@ def get_reachable_hosts_path(job_id: str) -> Path:
     """Get the path to the reachable_hosts.json file for a job."""
     return get_job_dir(job_id) / "reachable_hosts.json"
 
+def get_topology_path(job_id: str) -> Path:
+    """Get the path to the topology.json file (Batfish edges) for a job."""
+    return get_job_dir(job_id) / "topology.json"
+
+def get_network_graph_path(job_id: str) -> Path:
+    """Get the path to the network_graph.json file for a job."""
+    return get_job_dir(job_id) / "network_graph.json"
+
 def get_device_state_path(job_id: str, hostname: str) -> Path:
     """
     Get the path to a device state file.

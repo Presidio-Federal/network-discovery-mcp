@@ -639,12 +639,31 @@ async def get_topology(network_name: str, batfish_host: str = "batfish", snapsho
                 "available": result.get("snapshots", result.get("networks", []))
             }
         
-        return {
+        # Build the topology result
+        topology_result = {
             "network_name": network_name,
             "snapshot_name": result.get("actual_snapshot", snapshot_name),
             "status": "success",
-            "edges": result["edges"]
+            "edges": result["edges"],
+            "retrieved_at": datetime.utcnow().isoformat() + "Z"
         }
+        
+        # Save topology edges as artifact for later use
+        try:
+            from network_discovery.artifacts import atomic_write_json, get_job_dir
+            from pathlib import Path
+            
+            # Try to save as artifact (network_name might be job_id)
+            job_dir = get_job_dir(network_name)
+            if job_dir.exists():
+                topology_path = job_dir / "topology.json"
+                atomic_write_json(topology_result, topology_path)
+                logger.info(f"Saved topology edges to {topology_path}")
+        except Exception as e:
+            # Don't fail if artifact saving fails
+            logger.warning(f"Could not save topology artifact: {str(e)}")
+        
+        return topology_result
     except Exception as e:
         error_msg = f"Failed to get topology: {str(e)}"
         logger.error(error_msg, exc_info=True)

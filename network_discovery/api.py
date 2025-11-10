@@ -675,6 +675,36 @@ async def get_topology(job_id: str = None, network_name: str = None, snapshot_na
         logger.error(f"Error in get_topology endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/v1/network-graph/build")
+async def build_network_graph_endpoint(job_id: str):
+    """
+    Build comprehensive network graph including endpoints.
+    
+    This endpoint creates a complete network graph by merging:
+    - Network devices from Batfish topology
+    - Endpoints from fingerprints (servers, workstations, etc.)
+    - Inferred connections using subnet matching
+    
+    The graph is saved as network_graph.json artifact.
+    
+    Args:
+        job_id: Job identifier
+    """
+    try:
+        from network_discovery.network_graph_builder import build_network_graph
+        
+        result = await build_network_graph(job_id)
+        
+        if result.get('status') == 'failed':
+            raise HTTPException(status_code=500, detail=result.get('error', 'Unknown error'))
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error building network graph: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/v1/batfish/topology/html")
 async def get_topology_html(job_id: str = None, network_name: str = None, snapshot_name: str = None, output_dir: str = None):
     """
