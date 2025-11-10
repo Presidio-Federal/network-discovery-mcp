@@ -91,7 +91,7 @@ CONFIG_COMMANDS = {
     "Cisco": "show running-config",
     "Arista": "show running-config",
     "Juniper": "show configuration | display set",
-    "Palo Alto": "show config running",
+    "Palo Alto": "set",  # Returns config in SET format (Batfish-compatible)
     "Fortinet": "show full-configuration",
     "Huawei": "display current-configuration",
     "Linux/Unix": "cat /etc/network/interfaces",  # Basic example, might need sudo
@@ -141,14 +141,27 @@ def extract_hostname_from_config(config: str, vendor: str, default_hostname: str
                         return hostname
         
         elif vendor == "Palo Alto":
-            # Palo Alto uses "set deviceconfig system hostname <name>"
+            # Palo Alto uses "set deviceconfig system hostname <name>" in SET format
             for line in config.splitlines():
-                if "hostname" in line.lower():
+                # Look for the specific SET command for hostname
+                if line.strip().startswith("set deviceconfig system hostname"):
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        hostname = parts[4].strip()
+                        if hostname:
+                            logger.debug(f"Extracted Palo Alto hostname from SET format: {hostname}")
+                            return hostname
+                # Fallback: generic hostname search (for XML or other formats)
+                elif "hostname" in line.lower() and not line.strip().startswith("#"):
                     parts = line.strip().split()
                     if len(parts) >= 2:
-                        hostname = parts[-1].strip()
-                        if hostname:
-                            return hostname
+                        # Try to get the last part that looks like a hostname
+                        for part in reversed(parts):
+                            if part and not part.startswith("<") and not part.endswith(">"):
+                                hostname = part.strip().strip('"').strip("'")
+                                if hostname and hostname != "hostname":
+                                    logger.debug(f"Extracted Palo Alto hostname (fallback): {hostname}")
+                                    return hostname
         
         # Add more vendor-specific hostname extraction as needed
         
@@ -1054,6 +1067,17 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                     # Some devices don't need enable mode or it's already enabled
                     logger.debug(f"Enable mode not needed or already enabled on {host}: {str(e)}")
                 
+                # Palo Alto needs to enter configuration mode
+                if device_type == "paloalto_panos":
+                    logger.debug(f"Entering configuration mode on Palo Alto device {host}")
+                    try:
+                        # Enter configuration mode
+                        net_connect.send_command("configure", expect_string=r'#')
+                        logger.debug(f"Successfully entered configuration mode on {host}")
+                    except Exception as e:
+                        logger.warning(f"Could not enter configuration mode on {host}: {str(e)}")
+                        # Try to continue anyway - might already be in config mode
+                
                 # Netmiko automatically handles:
                 # - Terminal length 0 (disable paging)
                 # - Timing and prompts
@@ -1066,6 +1090,14 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                         read_timeout=180,  # Very long timeout for ASA
                         expect_string=r'#',  # Expect # prompt
                         delay_factor=4  # Extra delays between commands
+                    )
+                # Palo Alto needs special handling for SET command output
+                elif device_type == "paloalto_panos":
+                    logger.debug(f"Using Palo Alto-specific command handling")
+                    config = net_connect.send_command(
+                        command,
+                        read_timeout=120,  # Longer timeout for large configs
+                        expect_string=r'#'  # Expect # prompt
                     )
                 else:
                     config = net_connect.send_command(command, read_timeout=90)

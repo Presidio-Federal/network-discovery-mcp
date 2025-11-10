@@ -80,8 +80,10 @@ OS_DETECTION_PATTERNS = {
         r"JUNOS": {"vendor": "Juniper", "model": "JUNOS"},
         r"Juniper Networks": {"vendor": "Juniper", "model": "JUNOS"},
         
-        # Palo Alto PAN-OS
+        # Palo Alto PAN-OS - Enhanced patterns
         r"PAN-OS": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        r"Palo Alto Networks": {"vendor": "Palo Alto", "model": "PAN-OS"},
+        r"sw-version:\s*\d+\.\d+": {"vendor": "Palo Alto", "model": "PAN-OS"},  # Version info pattern
         
         # Fortinet
         r"FortiGate": {"vendor": "Fortinet", "model": "FortiOS"},
