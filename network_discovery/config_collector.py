@@ -1080,18 +1080,24 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
             }
             
             with ConnectHandler(**device_params) as net_connect:
+                # Log current prompt to understand device state
+                current_prompt = net_connect.find_prompt()
+                logger.info(f"Connected to {host}, current prompt: '{current_prompt}'")
+                
                 # Try to enter enable mode (privileged EXEC mode)
-                # This is required for most config commands on Cisco/Arista
+                # This is required for most config commands on Cisco/Arista/ASA
                 try:
                     if not net_connect.check_enable_mode():
-                        logger.debug(f"Not in enable mode on {host}, attempting to enter enable mode")
+                        logger.info(f"Not in enable mode on {host} (prompt: {current_prompt}), attempting to enter enable mode")
                         net_connect.enable()
-                        logger.debug(f"Successfully entered enable mode on {host}")
+                        new_prompt = net_connect.find_prompt()
+                        logger.info(f"Successfully entered enable mode on {host}, new prompt: '{new_prompt}'")
                     else:
                         logger.debug(f"Already in enable mode on {host}")
                 except Exception as e:
-                    # Some devices don't need enable mode or it's already enabled
-                    logger.debug(f"Enable mode not needed or already enabled on {host}: {str(e)}")
+                    # Log the error but try to continue - some devices don't need enable mode
+                    logger.warning(f"Could not enter enable mode on {host}: {str(e)}")
+                    logger.warning(f"Attempting to collect config anyway from {host}")
                 
                 # Palo Alto needs to enter configuration mode
                 if device_type == "paloalto_panos":
@@ -1127,6 +1133,15 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                     )
                 else:
                     config = net_connect.send_command(command, read_timeout=90)
+                
+                # Check if we got an error message instead of config
+                if "ERROR:" in config or "Invalid input" in config:
+                    logger.error(f"Command failed on {host}: {config[:500]}")
+                    # Check if it's an enable mode issue
+                    if not net_connect.check_enable_mode():
+                        raise Exception(f"Device {host} is not in enable mode and command failed. Enable password may be incorrect.")
+                    else:
+                        raise Exception(f"Command '{command}' failed on {host}: {config[:200]}")
                 
                 return config
         

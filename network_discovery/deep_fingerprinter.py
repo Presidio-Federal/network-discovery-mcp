@@ -84,6 +84,8 @@ OS_DETECTION_PATTERNS = {
         r"PAN-OS": {"vendor": "Palo Alto", "model": "PAN-OS"},
         r"Palo Alto Networks": {"vendor": "Palo Alto", "model": "PAN-OS"},
         r"sw-version:\s*\d+\.\d+": {"vendor": "Palo Alto", "model": "PAN-OS"},  # Version info pattern
+        r"hostname:\s*\S+": {"vendor": "Palo Alto", "model": "PAN-OS"},  # show system info has hostname field
+        r"family:\s*\d+": {"vendor": "Palo Alto", "model": "PAN-OS"},  # show system info has family field
         
         # Fortinet
         r"FortiGate": {"vendor": "Fortinet", "model": "FortiOS"},
@@ -302,33 +304,63 @@ async def _deep_fingerprint_device(
             )
             
             async with conn:
-                # Try 'show version' command
-                result = await asyncio.wait_for(
-                    conn.run("show version"),
-                    timeout=10
-                )
+                # Try multiple commands to detect OS
+                commands_to_try = [
+                    "show version",           # Cisco, Juniper, Arista
+                    "show system info",       # Palo Alto
+                    "get system status"       # Fortinet
+                ]
                 
-                if result.exit_status == 0:
-                    output = result.stdout
-                    
-                    # Match against patterns
-                    for pattern, info in OS_DETECTION_PATTERNS["show version"].items():
-                        if re.search(pattern, output, re.IGNORECASE | re.MULTILINE):
-                            logger.info(f"Detected {ip} as {info['vendor']} {info.get('model', 'unknown')}")
-                            return {
-                                "ip": ip,
-                                "detected": True,
-                                "vendor": info["vendor"],
-                                "model": info.get("model", "unknown"),
-                                "version_output": output[:1000],  # First 1000 chars for evidence
-                                "method": "show_version"
-                            }
+                output = ""
+                successful_command = None
                 
-                logger.debug(f"No pattern matched for {ip} in show version output")
+                for cmd in commands_to_try:
+                    try:
+                        logger.debug(f"Trying command '{cmd}' on {ip}")
+                        result = await asyncio.wait_for(
+                            conn.run(cmd),
+                            timeout=10
+                        )
+                        
+                        if result.exit_status == 0 and result.stdout:
+                            output = result.stdout
+                            successful_command = cmd
+                            logger.debug(f"Command '{cmd}' succeeded on {ip}")
+                            break
+                        else:
+                            logger.debug(f"Command '{cmd}' failed on {ip} with exit status {result.exit_status}")
+                    except Exception as e:
+                        logger.debug(f"Command '{cmd}' failed on {ip}: {str(e)}")
+                        continue
+                
+                if not output:
+                    logger.warning(f"All commands failed on {ip}")
+                    return {
+                        "ip": ip,
+                        "detected": False,
+                        "reason": "No command succeeded"
+                    }
+                
+                # Match against patterns
+                for pattern, info in OS_DETECTION_PATTERNS["show version"].items():
+                    if re.search(pattern, output, re.IGNORECASE | re.MULTILINE):
+                        logger.info(f"Detected {ip} as {info['vendor']} {info.get('model', 'unknown')} using command '{successful_command}'")
+                        return {
+                            "ip": ip,
+                            "detected": True,
+                            "vendor": info["vendor"],
+                            "model": info.get("model", "unknown"),
+                            "version_output": output[:1000],  # First 1000 chars for evidence
+                            "method": successful_command
+                        }
+                
+                logger.debug(f"No pattern matched for {ip} in output from '{successful_command}'")
+                logger.debug(f"Output preview: {output[:200]}")
                 return {
                     "ip": ip,
                     "detected": False,
-                    "reason": "No matching pattern in show version"
+                    "reason": "No matching pattern in output",
+                    "output_preview": output[:500]
                 }
                 
         except asyncssh.Error as e:
