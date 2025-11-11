@@ -34,6 +34,11 @@ from network_discovery.artifacts import (
 from network_discovery.config import DEFAULT_CONCURRENCY
 from network_discovery.utils import retry_with_backoff, with_timeout
 
+# Custom exception for command execution failures (don't fallback to other methods)
+class ConfigCommandFailedException(Exception):
+    """Raised when a config command fails execution (not auth/connection issue)"""
+    pass
+
 # SSH connection options for legacy device support
 # Supports older devices with deprecated algorithms (ssh-rsa, etc.)
 LEGACY_SSH_OPTIONS = {
@@ -790,11 +795,8 @@ async def _attempt_single_collection(
         except Exception as e:
             logger.debug(f"Netmiko failed for {hostname} ({ip}): {str(e)}")
             # Re-raise auth exceptions and command failures (don't fallback for these)
-            if isinstance(e, (NetmikoAuthenticationException, asyncssh.PermissionDenied)):
-                raise
-            # Also re-raise if it's a command execution error (not a connection error)
-            if "Command" in str(e) and "failed" in str(e):
-                logger.warning(f"Netmiko command execution failed for {hostname}, not trying fallback methods")
+            if isinstance(e, (NetmikoAuthenticationException, asyncssh.PermissionDenied, ConfigCommandFailedException)):
+                logger.error(f"Netmiko command execution failed for {hostname}, NOT trying AsyncSSH fallback")
                 raise
     
     # Try raw SSH as fallback
@@ -1146,11 +1148,14 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                 # ASA needs special handling - use longer read timeout and expect_string
                 if device_type == "cisco_asa":
                     logger.debug(f"Using ASA-specific command handling with extended timeout")
+                    # ASA outputs ": Saved\n: \n: Serial Number..." before the actual config
+                    # Don't use expect_string, let it read all output until timeout
                     config = net_connect.send_command(
                         command,
                         read_timeout=180,  # Very long timeout for ASA
-                        expect_string=r'#',  # Expect # prompt
-                        delay_factor=4  # Extra delays between commands
+                        delay_factor=4,  # Extra delays between commands
+                        strip_prompt=False,  # Keep everything
+                        strip_command=False  # Keep everything
                     )
                 # Palo Alto needs special handling for SET command output
                 elif device_type == "paloalto_panos":
@@ -1170,9 +1175,9 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                     current_mode = net_connect.check_enable_mode()
                     logger.error(f"Current enable mode status: {current_mode}")
                     if not current_mode:
-                        raise Exception(f"Device {host} dropped out of enable mode. Config command failed.")
+                        raise ConfigCommandFailedException(f"Device {host} dropped out of enable mode. Config command failed.")
                     else:
-                        raise Exception(f"Command '{command}' failed on {host} even in enable mode: {config[:200]}")
+                        raise ConfigCommandFailedException(f"Command '{command}' failed on {host} even in enable mode: {config[:200]}")
                 
                 return config
         
