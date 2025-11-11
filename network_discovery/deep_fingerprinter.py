@@ -317,18 +317,48 @@ async def _deep_fingerprint_device(
                 for cmd in commands_to_try:
                     try:
                         logger.debug(f"Trying command '{cmd}' on {ip}")
-                        result = await asyncio.wait_for(
-                            conn.run(cmd),
-                            timeout=10
-                        )
                         
-                        if result.exit_status == 0 and result.stdout:
-                            output = result.stdout
-                            successful_command = cmd
-                            logger.debug(f"Command '{cmd}' succeeded on {ip}")
-                            break
-                        else:
-                            logger.debug(f"Command '{cmd}' failed on {ip} with exit status {result.exit_status}")
+                        # For some devices (Palo Alto), non-interactive command execution fails
+                        # Try both methods: direct run() and interactive process
+                        try:
+                            # Try direct command execution first (faster)
+                            result = await asyncio.wait_for(
+                                conn.run(cmd),
+                                timeout=10
+                            )
+                            
+                            if result.exit_status == 0 and result.stdout:
+                                output = result.stdout
+                                successful_command = cmd
+                                logger.debug(f"Command '{cmd}' succeeded on {ip} via direct execution")
+                                break
+                            else:
+                                logger.debug(f"Command '{cmd}' failed on {ip} with exit status {result.exit_status}")
+                        except Exception as e:
+                            # If direct execution fails, try interactive session
+                            logger.debug(f"Direct execution of '{cmd}' failed on {ip}, trying interactive: {str(e)}")
+                            
+                            try:
+                                # Create interactive process for Palo Alto-like devices
+                                async with conn.create_process() as process:
+                                    # Send command
+                                    process.stdin.write(f"{cmd}\n")
+                                    await process.stdin.drain()
+                                    
+                                    # Read output with timeout
+                                    output_bytes = await asyncio.wait_for(
+                                        process.stdout.read(8192),
+                                        timeout=10
+                                    )
+                                    output = output_bytes
+                                    
+                                    if output and len(output) > 50:  # Got meaningful output
+                                        successful_command = cmd
+                                        logger.debug(f"Command '{cmd}' succeeded on {ip} via interactive session")
+                                        break
+                            except Exception as e2:
+                                logger.debug(f"Interactive execution of '{cmd}' also failed on {ip}: {str(e2)}")
+                                continue
                     except Exception as e:
                         logger.debug(f"Command '{cmd}' failed on {ip}: {str(e)}")
                         continue
