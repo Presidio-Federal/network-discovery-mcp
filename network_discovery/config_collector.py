@@ -789,8 +789,12 @@ async def _attempt_single_collection(
                 return config, protocol_used
         except Exception as e:
             logger.debug(f"Netmiko failed for {hostname} ({ip}): {str(e)}")
-            # Re-raise auth exceptions
+            # Re-raise auth exceptions and command failures (don't fallback for these)
             if isinstance(e, (NetmikoAuthenticationException, asyncssh.PermissionDenied)):
+                raise
+            # Also re-raise if it's a command execution error (not a connection error)
+            if "Command" in str(e) and "failed" in str(e):
+                logger.warning(f"Netmiko command execution failed for {hostname}, not trying fallback methods")
                 raise
     
     # Try raw SSH as fallback
@@ -1056,12 +1060,16 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                 banner_timeout = 45  # Increased from 30
                 read_timeout = 120  # Explicit read timeout
                 global_delay = 4  # Increased from 2
+                # CRITICAL: Allow user mode prompt (>) for initial connection
+                # We'll escalate to enable mode after connecting
+                allow_auto_change = True
             else:
                 timeout = 30
                 session_timeout = 60
                 banner_timeout = 15
                 read_timeout = 60
                 global_delay = 1
+                allow_auto_change = False
             
             device_params = {
                 'device_type': device_type,
@@ -1077,6 +1085,7 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                 'global_delay_factor': global_delay,
                 'read_timeout_override': read_timeout,  # ASA needs this
                 'fast_cli': False if device_type == "cisco_asa" else True,  # Disable fast_cli for ASA
+                'allow_auto_change': allow_auto_change,  # Allow connecting in user mode
             }
             
             with ConnectHandler(**device_params) as net_connect:
@@ -1158,10 +1167,12 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                 if "ERROR:" in config or "Invalid input" in config:
                     logger.error(f"Command failed on {host}: {config[:500]}")
                     # Check if it's an enable mode issue
-                    if not net_connect.check_enable_mode():
-                        raise Exception(f"Device {host} is not in enable mode and command failed. Enable password may be incorrect.")
+                    current_mode = net_connect.check_enable_mode()
+                    logger.error(f"Current enable mode status: {current_mode}")
+                    if not current_mode:
+                        raise Exception(f"Device {host} dropped out of enable mode. Config command failed.")
                     else:
-                        raise Exception(f"Command '{command}' failed on {host}: {config[:200]}")
+                        raise Exception(f"Command '{command}' failed on {host} even in enable mode: {config[:200]}")
                 
                 return config
         
