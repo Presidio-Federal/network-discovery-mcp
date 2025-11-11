@@ -84,8 +84,8 @@ OS_DETECTION_PATTERNS = {
         r"PAN-OS": {"vendor": "Palo Alto", "model": "PAN-OS"},
         r"Palo Alto Networks": {"vendor": "Palo Alto", "model": "PAN-OS"},
         r"sw-version:\s*\d+\.\d+": {"vendor": "Palo Alto", "model": "PAN-OS"},  # Version info pattern
-        r"hostname:\s*\S+": {"vendor": "Palo Alto", "model": "PAN-OS"},  # show system info has hostname field
-        r"family:\s*\d+": {"vendor": "Palo Alto", "model": "PAN-OS"},  # show system info has family field
+        r"model:\s*(PA-|VM-)": {"vendor": "Palo Alto", "model": "PAN-OS"},  # Model starts with PA- or VM-
+        r"devicename:\s*\S+": {"vendor": "Palo Alto", "model": "PAN-OS"},  # show system info has devicename field
         
         # Fortinet
         r"FortiGate": {"vendor": "Fortinet", "model": "FortiOS"},
@@ -342,9 +342,10 @@ async def _deep_fingerprint_device(
                     }
                 
                 # Match against patterns
+                logger.debug(f"Attempting to match patterns for {ip}, output length: {len(output)}")
                 for pattern, info in OS_DETECTION_PATTERNS["show version"].items():
                     if re.search(pattern, output, re.IGNORECASE | re.MULTILINE):
-                        logger.info(f"Detected {ip} as {info['vendor']} {info.get('model', 'unknown')} using command '{successful_command}'")
+                        logger.info(f"Detected {ip} as {info['vendor']} {info.get('model', 'unknown')} using command '{successful_command}' (pattern: {pattern[:50]})")
                         return {
                             "ip": ip,
                             "detected": True,
@@ -354,8 +355,8 @@ async def _deep_fingerprint_device(
                             "method": successful_command
                         }
                 
-                logger.debug(f"No pattern matched for {ip} in output from '{successful_command}'")
-                logger.debug(f"Output preview: {output[:200]}")
+                logger.warning(f"No pattern matched for {ip} in output from '{successful_command}'")
+                logger.warning(f"Output preview (first 300 chars): {output[:300]}")
                 return {
                     "ip": ip,
                     "detected": False,
