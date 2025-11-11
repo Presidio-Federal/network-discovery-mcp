@@ -327,6 +327,11 @@ async def _deep_fingerprint_device(
                                 timeout=10
                             )
                             
+                            # Check if output contains error messages
+                            if result.stdout and ("Invalid user" in result.stdout or "invalid" in result.stdout.lower()):
+                                logger.debug(f"Command '{cmd}' returned error on {ip}, trying next command")
+                                continue  # Try next command
+                            
                             if result.exit_status == 0 and result.stdout:
                                 output = result.stdout
                                 successful_command = cmd
@@ -351,6 +356,11 @@ async def _deep_fingerprint_device(
                                         timeout=10
                                     )
                                     output = output_bytes
+                                    
+                                    # Check if output is an error message
+                                    if "Invalid user" in output or "invalid" in output.lower() or "error" in output.lower():
+                                        logger.debug(f"Command '{cmd}' returned error on {ip}: {output[:100]}")
+                                        continue  # Try next command
                                     
                                     if output and len(output) > 50:  # Got meaningful output
                                         successful_command = cmd
