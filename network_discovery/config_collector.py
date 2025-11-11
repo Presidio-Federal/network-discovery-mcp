@@ -1084,20 +1084,40 @@ async def _collect_via_netmiko(ip: str, creds: Dict, vendor: str, model: str = "
                 current_prompt = net_connect.find_prompt()
                 logger.info(f"Connected to {host}, current prompt: '{current_prompt}'")
                 
+                # Check if prompt indicates we're in user mode (ends with >)
+                in_enable_mode = net_connect.check_enable_mode()
+                logger.info(f"Enable mode check for {host}: {in_enable_mode} (prompt: '{current_prompt}')")
+                
                 # Try to enter enable mode (privileged EXEC mode)
                 # This is required for most config commands on Cisco/Arista/ASA
-                try:
-                    if not net_connect.check_enable_mode():
-                        logger.info(f"Not in enable mode on {host} (prompt: {current_prompt}), attempting to enter enable mode")
+                if not in_enable_mode:
+                    logger.info(f"Not in enable mode on {host}, attempting to enter enable mode")
+                    try:
+                        # First try with the provided enable password
                         net_connect.enable()
                         new_prompt = net_connect.find_prompt()
                         logger.info(f"Successfully entered enable mode on {host}, new prompt: '{new_prompt}'")
-                    else:
-                        logger.debug(f"Already in enable mode on {host}")
-                except Exception as e:
-                    # Log the error but try to continue - some devices don't need enable mode
-                    logger.warning(f"Could not enter enable mode on {host}: {str(e)}")
-                    logger.warning(f"Attempting to collect config anyway from {host}")
+                    except Exception as e:
+                        logger.error(f"FAILED to enter enable mode on {host} with provided password: {str(e)}")
+                        
+                        # For ASA specifically, try with empty password
+                        if device_type == "cisco_asa":
+                            logger.info(f"Trying enable mode on ASA {host} with empty password")
+                            try:
+                                # Temporarily override secret with empty string
+                                net_connect.secret = ""
+                                net_connect.enable()
+                                new_prompt = net_connect.find_prompt()
+                                logger.info(f"Successfully entered enable mode on ASA {host} with empty password, new prompt: '{new_prompt}'")
+                            except Exception as e2:
+                                logger.error(f"FAILED to enter enable mode on ASA {host} with empty password: {str(e2)}")
+                                logger.error(f"ASA {host} may not have enable mode configured or requires different password")
+                                logger.warning(f"Attempting to collect config anyway from {host} - this will likely fail")
+                        else:
+                            logger.error(f"Enable password might be incorrect or device doesn't support enable mode")
+                            logger.warning(f"Attempting to collect config anyway from {host}")
+                else:
+                    logger.info(f"Already in enable mode on {host}")
                 
                 # Palo Alto needs to enter configuration mode
                 if device_type == "paloalto_panos":
