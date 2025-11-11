@@ -96,7 +96,7 @@ CONFIG_COMMANDS = {
     "Cisco": "show running-config",
     "Arista": "show running-config",
     "Juniper": "show configuration | display set",
-    "Palo Alto": "set",  # Returns config in SET format (Batfish-compatible)
+    "Palo Alto": "show config running",  # Palo Alto command for running config
     "Fortinet": "show full-configuration",
     "Huawei": "display current-configuration",
     "Linux/Unix": "cat /etc/network/interfaces",  # Basic example, might need sudo
@@ -341,6 +341,7 @@ async def collect_all_state(job_id: str, creds: Union[Dict, List[Dict]], concurr
             device = {
                 "ip": host["ip"],
                 "vendor": host["inference"]["vendor"],
+                "model": host["inference"].get("model", ""),  # Include model for ASA detection
                 "hostname": host.get("hostname", host["ip"]),
                 "protocols": host.get("inference", {}).get("protocols", [])
             }
