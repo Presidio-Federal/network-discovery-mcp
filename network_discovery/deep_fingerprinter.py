@@ -304,74 +304,94 @@ async def _deep_fingerprint_device(
             )
             
             async with conn:
-                # Try multiple commands to detect OS
-                commands_to_try = [
-                    "show version",           # Cisco, Juniper, Arista
-                    "show system info",       # Palo Alto
-                    "get system status"       # Fortinet
-                ]
+                # Determine which commands to try based on device vendor hint
+                current_vendor = device.get("current_vendor", "unknown").lower()
+                
+                if "palo alto" in current_vendor or "pan" in current_vendor:
+                    # Palo Alto ONLY supports 'show system info', not 'show version'
+                    commands_to_try = ["show system info"]
+                    logger.debug(f"Detected Palo Alto hint, using only 'show system info'")
+                elif "fortinet" in current_vendor or "forti" in current_vendor:
+                    # Fortinet uses 'get system status'
+                    commands_to_try = ["get system status"]
+                    logger.debug(f"Detected Fortinet hint, using only 'get system status'")
+                else:
+                    # Try common commands for Cisco/Juniper/Arista/etc
+                    commands_to_try = [
+                        "show version",           # Cisco, Juniper, Arista
+                        "show system info",       # Palo Alto (fallback)
+                        "get system status"       # Fortinet (fallback)
+                    ]
                 
                 output = ""
                 successful_command = None
                 
                 for cmd in commands_to_try:
+                    logger.debug(f"Trying command '{cmd}' on {ip}")
+                    cmd_output = None
+                    cmd_succeeded = False
+                    
+                    # Try direct command execution first (faster)
                     try:
-                        logger.debug(f"Trying command '{cmd}' on {ip}")
+                        result = await asyncio.wait_for(
+                            conn.run(cmd),
+                            timeout=10
+                        )
                         
-                        # For some devices (Palo Alto), non-interactive command execution fails
-                        # Try both methods: direct run() and interactive process
-                        try:
-                            # Try direct command execution first (faster)
-                            result = await asyncio.wait_for(
-                                conn.run(cmd),
-                                timeout=10
-                            )
-                            
-                            # Check if output contains error messages
-                            if result.stdout and ("Invalid user" in result.stdout or "invalid" in result.stdout.lower()):
-                                logger.debug(f"Command '{cmd}' returned error on {ip}, trying next command")
-                                continue  # Try next command
-                            
-                            if result.exit_status == 0 and result.stdout:
-                                output = result.stdout
-                                successful_command = cmd
+                        # Check if we got valid output from direct execution
+                        if result.exit_status == 0 and result.stdout and len(result.stdout) > 50:
+                            # Make sure it's not an error message
+                            if "Invalid user" not in result.stdout and "Permission denied" not in result.stdout:
+                                cmd_output = result.stdout
+                                cmd_succeeded = True
                                 logger.debug(f"Command '{cmd}' succeeded on {ip} via direct execution")
-                                break
                             else:
-                                logger.debug(f"Command '{cmd}' failed on {ip} with exit status {result.exit_status}")
-                        except Exception as e:
-                            # If direct execution fails, try interactive session
-                            logger.debug(f"Direct execution of '{cmd}' failed on {ip}, trying interactive: {str(e)}")
-                            
-                            try:
-                                # Create interactive process for Palo Alto-like devices
-                                async with conn.create_process() as process:
-                                    # Send command
-                                    process.stdin.write(f"{cmd}\n")
-                                    await process.stdin.drain()
-                                    
-                                    # Read output with timeout
-                                    output_bytes = await asyncio.wait_for(
-                                        process.stdout.read(8192),
-                                        timeout=10
-                                    )
-                                    output = output_bytes
-                                    
-                                    # Check if output is an error message
-                                    if "Invalid user" in output or "invalid" in output.lower() or "error" in output.lower():
-                                        logger.debug(f"Command '{cmd}' returned error on {ip}: {output[:100]}")
-                                        continue  # Try next command
-                                    
-                                    if output and len(output) > 50:  # Got meaningful output
-                                        successful_command = cmd
-                                        logger.debug(f"Command '{cmd}' succeeded on {ip} via interactive session")
-                                        break
-                            except Exception as e2:
-                                logger.debug(f"Interactive execution of '{cmd}' also failed on {ip}: {str(e2)}")
-                                continue
+                                logger.debug(f"Direct execution of '{cmd}' returned error message, will try interactive")
+                        else:
+                            logger.debug(f"Direct execution of '{cmd}' failed with exit status {result.exit_status}")
                     except Exception as e:
-                        logger.debug(f"Command '{cmd}' failed on {ip}: {str(e)}")
-                        continue
+                        logger.debug(f"Direct execution of '{cmd}' failed on {ip}: {str(e)}")
+                    
+                    # If direct execution didn't work, try interactive session (for Palo Alto)
+                    if not cmd_succeeded:
+                        try:
+                            logger.debug(f"Trying interactive session for '{cmd}' on {ip}")
+                            async with conn.create_process() as process:
+                                # Wait a moment for prompt to appear
+                                await asyncio.sleep(0.5)
+                                
+                                # Send command
+                                process.stdin.write(f"{cmd}\n")
+                                await process.stdin.drain()
+                                
+                                # Give device time to process and respond
+                                await asyncio.sleep(1)
+                                
+                                # Read output with timeout
+                                output_bytes = await asyncio.wait_for(
+                                    process.stdout.read(16384),  # Increased buffer
+                                    timeout=15
+                                )
+                                cmd_output = output_bytes
+                                
+                                logger.debug(f"Interactive session returned {len(cmd_output)} bytes for '{cmd}' on {ip}")
+                                
+                                # Check if output is an error message
+                                if "Invalid user" in cmd_output or "Permission denied" in cmd_output or "Invalid syntax" in cmd_output:
+                                    logger.debug(f"Interactive '{cmd}' returned error on {ip}, trying next command")
+                                    continue  # Skip to next command
+                                
+                                if cmd_output and len(cmd_output) > 50:
+                                    cmd_succeeded = True
+                                    logger.debug(f"Command '{cmd}' succeeded on {ip} via interactive session")
+                        except Exception as e2:
+                            logger.debug(f"Interactive execution of '{cmd}' failed on {ip}: {str(e2)}")
+                    
+                    # If we got valid output, stop trying commands
+                    if cmd_succeeded and cmd_output:
+                        output = cmd_output
+                        successful_command = cmd
+                        break
                 
                 if not output:
                     logger.warning(f"All commands failed on {ip}")
