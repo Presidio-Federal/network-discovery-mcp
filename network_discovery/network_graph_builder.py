@@ -261,7 +261,21 @@ async def _load_artifacts(job_id: str) -> Dict[str, Any]:
             artifacts['topology'] = read_json(topology_path)
             logger.info(f"Loaded topology with {len(artifacts['topology'].get('edges', []))} edges")
         else:
-            logger.warning(f"Topology file not found at {topology_path}")
+            # Topology file doesn't exist - try to fetch from Batfish
+            logger.warning(f"Topology file not found at {topology_path}, fetching from Batfish")
+            try:
+                from network_discovery.batfish_loader import get_topology
+                topology_data = await get_topology(
+                    network_name=job_id,
+                    snapshot_name='snapshot_latest'
+                )
+                if topology_data and topology_data.get('status') == 'success':
+                    artifacts['topology'] = topology_data
+                    logger.info(f"Fetched topology from Batfish with {len(topology_data.get('edges', []))} edges")
+                else:
+                    logger.warning(f"Failed to fetch topology from Batfish: {topology_data}")
+            except Exception as batfish_err:
+                logger.error(f"Could not fetch topology from Batfish: {str(batfish_err)}")
     except Exception as e:
         logger.warning(f"Could not load topology: {str(e)}")
     
