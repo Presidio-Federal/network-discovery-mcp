@@ -358,32 +358,37 @@ async def _deep_fingerprint_device(
                         try:
                             logger.info(f"Trying interactive session for '{cmd}' on {ip}")
                             async with conn.create_process() as process:
-                                # For Palo Alto, we need to wait for the initial prompt before sending command
-                                await asyncio.sleep(1)
+                                logger.info(f"Interactive process created for '{cmd}' on {ip}")
                                 
-                                # Send command
+                                # Send command immediately
                                 process.stdin.write(f"{cmd}\n")
                                 await process.stdin.drain()
+                                logger.info(f"Command sent to {ip}, now reading output...")
                                 
-                                # For Palo Alto 'show system info', output can be large, wait longer
-                                await asyncio.sleep(3)
-                                
-                                # Read ALL available output
+                                # Read ALL available output immediately
+                                # Don't sleep - Palo Alto will close connection if we don't read!
                                 cmd_output = ""
                                 try:
-                                    # Keep reading until no more data for 2 seconds
+                                    # Read in a loop until channel closes or no more data
                                     while True:
-                                        chunk = await asyncio.wait_for(
-                                            process.stdout.read(4096),
-                                            timeout=2
-                                        )
-                                        if chunk:
-                                            cmd_output += chunk
-                                        else:
+                                        try:
+                                            chunk = await asyncio.wait_for(
+                                                process.stdout.read(4096),
+                                                timeout=10  # Long timeout for slow devices
+                                            )
+                                            if chunk:
+                                                cmd_output += chunk
+                                                logger.info(f"Read {len(chunk)} bytes, total now {len(cmd_output)}")
+                                            else:
+                                                # Empty read means EOF
+                                                logger.info(f"Got EOF, stopping read loop")
+                                                break
+                                        except asyncio.TimeoutError:
+                                            # No more data available
+                                            logger.info(f"Timeout waiting for more data, total read: {len(cmd_output)}")
                                             break
-                                except asyncio.TimeoutError:
-                                    # Timeout is expected when no more data
-                                    pass
+                                except Exception as read_err:
+                                    logger.error(f"Error reading output: {read_err}", exc_info=True)
                                 
                                 logger.info(f"Interactive session returned {len(cmd_output)} bytes for '{cmd}' on {ip}")
                                 if cmd_output:
@@ -400,7 +405,7 @@ async def _deep_fingerprint_device(
                                     cmd_succeeded = True
                                     logger.debug(f"Command '{cmd}' succeeded on {ip} via interactive session")
                         except Exception as e2:
-                            logger.debug(f"Interactive execution of '{cmd}' failed on {ip}: {str(e2)}")
+                            logger.error(f"Interactive execution of '{cmd}' failed on {ip}: {str(e2)}", exc_info=True)
                     
                     # If we got valid output, stop trying commands
                     if cmd_succeeded and cmd_output:
