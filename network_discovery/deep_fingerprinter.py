@@ -357,27 +357,36 @@ async def _deep_fingerprint_device(
                         try:
                             logger.debug(f"Trying interactive session for '{cmd}' on {ip}")
                             async with conn.create_process() as process:
-                                # Wait a moment for prompt to appear
-                                await asyncio.sleep(0.5)
-                                
-                                # Send command
+                                # Send command immediately
                                 process.stdin.write(f"{cmd}\n")
                                 await process.stdin.drain()
                                 
-                                # Give device time to process and respond
-                                await asyncio.sleep(1)
+                                # Read output in chunks until we have data or timeout
+                                cmd_output = ""
+                                start_time = asyncio.get_event_loop().time()
+                                timeout = 10
                                 
-                                # Read output with timeout
-                                output_bytes = await asyncio.wait_for(
-                                    process.stdout.read(16384),  # Increased buffer
-                                    timeout=15
-                                )
-                                cmd_output = output_bytes
+                                while (asyncio.get_event_loop().time() - start_time) < timeout:
+                                    try:
+                                        chunk = await asyncio.wait_for(
+                                            process.stdout.read(8192),
+                                            timeout=2
+                                        )
+                                        if chunk:
+                                            cmd_output += chunk
+                                            # If we have substantial output, we're done
+                                            if len(cmd_output) > 200:
+                                                break
+                                    except asyncio.TimeoutError:
+                                        # No more data available
+                                        if cmd_output:
+                                            break
                                 
                                 logger.debug(f"Interactive session returned {len(cmd_output)} bytes for '{cmd}' on {ip}")
+                                logger.debug(f"First 200 chars: {cmd_output[:200]}")
                                 
                                 # Check if output is an error message
-                                if "Invalid user" in cmd_output or "Permission denied" in cmd_output or "Invalid syntax" in cmd_output:
+                                if cmd_output and ("Invalid user" in cmd_output or "Permission denied" in cmd_output or "Invalid syntax" in cmd_output):
                                     logger.debug(f"Interactive '{cmd}' returned error on {ip}, trying next command")
                                     continue  # Skip to next command
                                 
