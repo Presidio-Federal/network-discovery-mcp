@@ -202,8 +202,15 @@ async def build_network_graph(job_id: str) -> Dict[str, Any]:
         
         # Save graph as artifact
         graph_path = get_network_graph_path(job_id)
+        logger.info(f"Saving network graph to {graph_path}")
         atomic_write_json(graph, graph_path)
-        logger.info(f"Network graph saved to {graph_path}")
+        
+        # Verify file was created
+        if not graph_path.exists():
+            raise RuntimeError(f"Network graph file was not created at {graph_path}")
+        
+        file_size = graph_path.stat().st_size
+        logger.info(f"Network graph saved successfully: {graph_path} ({file_size} bytes)")
         
         logger.info(f"Network graph built successfully in {duration_ms}ms")
         logger.info(f"Total devices: {graph['statistics']['total_devices']} "

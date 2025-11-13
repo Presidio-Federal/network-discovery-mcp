@@ -74,7 +74,18 @@ def get_artifact_content(job_id: str, filename: str) -> Tuple[Dict[str, Any], Op
     # Check if the file exists
     if not file_path.exists() or not file_path.is_file():
         logger.warning(f"File not found: {file_path}")
-        return {"error": "File not found", "path": str(file_path)}, None, 404
+        
+        # Debug: List what files ARE in the directory
+        if job_dir.exists():
+            try:
+                files_in_dir = list(job_dir.iterdir())
+                logger.warning(f"Files in job directory {job_dir}: {[f.name for f in files_in_dir]}")
+            except Exception as e:
+                logger.warning(f"Could not list directory contents: {e}")
+        else:
+            logger.warning(f"Job directory does not exist: {job_dir}")
+        
+        return {"error": "File not found", "path": str(file_path), "job_dir": str(job_dir)}, None, 404
     
     # Get file size
     file_size = file_path.stat().st_size

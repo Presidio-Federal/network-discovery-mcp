@@ -288,7 +288,12 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                         if vendor:
                             # Map vendor to device type
                             if "cisco" in vendor:
-                                device_type = "cisco_xe"
+                                # Check if it's an ASA
+                                model = device_info.get("model", "").upper()
+                                if "ASA" in model:
+                                    device_type = "cisco_asa"
+                                else:
+                                    device_type = "cisco_xe"
                             elif "arista" in vendor:
                                 device_type = "arista_eos"
                             elif "juniper" in vendor:
@@ -344,7 +349,12 @@ def generate_topology_html(job_id: str = None, network_name: str = None, snapsho
                         if vendor:
                             # Map vendor to device type
                             if "cisco" in vendor:
-                                device_type = "cisco_xe"
+                                # Check if it's an ASA
+                                model = device_info.get("model", "").upper()
+                                if "ASA" in model:
+                                    device_type = "cisco_asa"
+                                else:
+                                    device_type = "cisco_xe"
                             elif "arista" in vendor:
                                 device_type = "arista_eos"
                             elif "juniper" in vendor:
