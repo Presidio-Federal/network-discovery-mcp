@@ -310,11 +310,11 @@ async def _deep_fingerprint_device(
                 if "palo alto" in current_vendor or "pan" in current_vendor:
                     # Palo Alto ONLY supports 'show system info', not 'show version'
                     commands_to_try = ["show system info"]
-                    logger.debug(f"Detected Palo Alto hint, using only 'show system info'")
+                    logger.info(f"Detected Palo Alto hint for {ip}, using only 'show system info'")
                 elif "fortinet" in current_vendor or "forti" in current_vendor:
                     # Fortinet uses 'get system status'
                     commands_to_try = ["get system status"]
-                    logger.debug(f"Detected Fortinet hint, using only 'get system status'")
+                    logger.info(f"Detected Fortinet hint for {ip}, using only 'get system status'")
                 else:
                     # Try common commands for Cisco/Juniper/Arista/etc
                     commands_to_try = [
@@ -322,6 +322,7 @@ async def _deep_fingerprint_device(
                         "show system info",       # Palo Alto (fallback)
                         "get system status"       # Fortinet (fallback)
                     ]
+                    logger.info(f"No vendor hint for {ip}, trying all commands: {commands_to_try}")
                 
                 output = ""
                 successful_command = None
@@ -355,35 +356,40 @@ async def _deep_fingerprint_device(
                     # If direct execution didn't work, try interactive session (for Palo Alto)
                     if not cmd_succeeded:
                         try:
-                            logger.debug(f"Trying interactive session for '{cmd}' on {ip}")
+                            logger.info(f"Trying interactive session for '{cmd}' on {ip}")
                             async with conn.create_process() as process:
-                                # Send command immediately
+                                # For Palo Alto, we need to wait for the initial prompt before sending command
+                                await asyncio.sleep(1)
+                                
+                                # Send command
                                 process.stdin.write(f"{cmd}\n")
                                 await process.stdin.drain()
                                 
-                                # Read output in chunks until we have data or timeout
-                                cmd_output = ""
-                                start_time = asyncio.get_event_loop().time()
-                                timeout = 10
+                                # For Palo Alto 'show system info', output can be large, wait longer
+                                await asyncio.sleep(3)
                                 
-                                while (asyncio.get_event_loop().time() - start_time) < timeout:
-                                    try:
+                                # Read ALL available output
+                                cmd_output = ""
+                                try:
+                                    # Keep reading until no more data for 2 seconds
+                                    while True:
                                         chunk = await asyncio.wait_for(
-                                            process.stdout.read(8192),
+                                            process.stdout.read(4096),
                                             timeout=2
                                         )
                                         if chunk:
                                             cmd_output += chunk
-                                            # If we have substantial output, we're done
-                                            if len(cmd_output) > 200:
-                                                break
-                                    except asyncio.TimeoutError:
-                                        # No more data available
-                                        if cmd_output:
+                                        else:
                                             break
+                                except asyncio.TimeoutError:
+                                    # Timeout is expected when no more data
+                                    pass
                                 
-                                logger.debug(f"Interactive session returned {len(cmd_output)} bytes for '{cmd}' on {ip}")
-                                logger.debug(f"First 200 chars: {cmd_output[:200]}")
+                                logger.info(f"Interactive session returned {len(cmd_output)} bytes for '{cmd}' on {ip}")
+                                if cmd_output:
+                                    logger.info(f"First 200 chars: {cmd_output[:200]}")
+                                else:
+                                    logger.warning(f"Interactive session returned EMPTY output for '{cmd}' on {ip}")
                                 
                                 # Check if output is an error message
                                 if cmd_output and ("Invalid user" in cmd_output or "Permission denied" in cmd_output or "Invalid syntax" in cmd_output):
