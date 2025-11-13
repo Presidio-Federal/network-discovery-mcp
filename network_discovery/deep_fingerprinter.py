@@ -357,7 +357,8 @@ async def _deep_fingerprint_device(
                     if not cmd_succeeded:
                         try:
                             logger.info(f"Trying interactive session for '{cmd}' on {ip}")
-                            async with conn.create_process() as process:
+                            # Palo Alto REQUIRES a PTY for CLI automation
+                            async with conn.create_process(term_type='vt100') as process:
                                 logger.info(f"Interactive process created for '{cmd}' on {ip}")
                                 
                                 # Send command immediately
