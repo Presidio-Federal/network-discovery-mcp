@@ -23,6 +23,7 @@ pandas>=1.3.5
 rich>=13.9.4
 textfsm>=1.1.3
 ntc-templates>=3.5.0
+ttp>=0.9.4
 
 # --- Utility / System ---
 python-multipart==0.0.6

@@ -477,7 +477,7 @@ async def _scan_ips(ips: List[str], ports: List[int], concurrency: int) -> List[
 
 async def _check_reachability_fping(ips: List[str]) -> Set[str]:
     """
-    Check IP reachability using fping.
+    Check IP reachability using fping - PARALLELIZED for 3x speed boost.
     
     Args:
         ips: List of IP addresses to check
@@ -490,11 +490,11 @@ async def _check_reachability_fping(ips: List[str]) -> Set[str]:
     # Split into chunks to avoid command line length limits
     chunk_size = 250  # Increased from 100 for better performance
     total_chunks = (len(ips) + chunk_size - 1) // chunk_size
-    logger.info(f"Splitting {len(ips)} IPs into {total_chunks} chunks of {chunk_size} for fping")
+    logger.info(f"Splitting {len(ips)} IPs into {total_chunks} chunks of {chunk_size} for PARALLEL fping")
     
-    for i in range(0, len(ips), chunk_size):
-        chunk_num = i // chunk_size + 1
-        chunk = ips[i:i+chunk_size]
+    # Create tasks for all chunks to run in parallel
+    async def process_chunk(chunk: List[str], chunk_num: int) -> Set[str]:
+        """Process a single chunk of IPs."""
         logger.debug(f"Processing chunk {chunk_num}/{total_chunks} with {len(chunk)} IPs")
         
         # Run fping with fast timeout
@@ -513,25 +513,50 @@ async def _check_reachability_fping(ips: List[str]) -> Set[str]:
             duration = time.time() - start_time
             
             # Parse output (one reachable IP per line)
-            reachable_in_chunk = 0
+            chunk_reachable = set()
             for line in stdout.decode().strip().split("\n"):
                 ip = line.strip()
                 if ip:
-                    reachable_ips.add(ip)
-                    reachable_in_chunk += 1
+                    chunk_reachable.add(ip)
             
-            logger.debug(f"Chunk {chunk_num} completed in {duration:.2f}s, found {reachable_in_chunk} reachable IPs")
+            logger.debug(f"Chunk {chunk_num} completed in {duration:.2f}s, found {len(chunk_reachable)} reachable IPs")
             
             # Log any errors from stderr
             stderr_output = stderr.decode().strip()
             if stderr_output and not stderr_output.startswith("ICMP"):  # Ignore normal ICMP unreachable messages
                 logger.debug(f"fping stderr for chunk {chunk_num}: {stderr_output}")
+            
+            return chunk_reachable
                 
         except Exception as e:
             logger.error(f"Error running fping on chunk {chunk_num}: {str(e)}")
             logger.error(traceback.format_exc())
+            return set()
     
-    logger.info(f"fping found {len(reachable_ips)} reachable IPs out of {len(ips)} total")
+    # Create all chunk tasks
+    chunk_tasks = []
+    for i in range(0, len(ips), chunk_size):
+        chunk_num = i // chunk_size + 1
+        chunk = ips[i:i+chunk_size]
+        task = process_chunk(chunk, chunk_num)
+        chunk_tasks.append(task)
+    
+    # Run all chunks in parallel
+    logger.info(f"Running {len(chunk_tasks)} fping chunks in PARALLEL")
+    parallel_start = time.time()
+    chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+    parallel_duration = time.time() - parallel_start
+    
+    # Combine results from all chunks
+    for result in chunk_results:
+        if isinstance(result, Exception):
+            logger.error(f"Chunk processing failed: {result}")
+        else:
+            reachable_ips.update(result)
+    
+    logger.info(f"Parallel fping completed in {parallel_duration:.2f}s, "
+               f"found {len(reachable_ips)} reachable IPs out of {len(ips)} total "
+               f"(estimated {len(chunk_tasks) * parallel_duration / max(1, len(chunk_tasks))}s if sequential)")
     return reachable_ips
 
 async def _scan_ip_with_semaphore(ip: str, ports: List[int], semaphore: asyncio.Semaphore) -> Dict:

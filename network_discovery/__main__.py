@@ -3,7 +3,7 @@ Network Discovery Service - Main Entry Point
 
 This module serves as the main entry point for the Network Discovery Service.
 It can run in either FastAPI mode or MCP mode based on environment variables.
-Includes graceful shutdown handling for both modes.
+Includes graceful shutdown handling for both modes and SSH connection pooling.
 """
 
 import os
@@ -23,6 +23,27 @@ logger = logging.getLogger(__name__)
 
 # Global flag for shutdown
 shutdown_event = asyncio.Event()
+
+async def initialize_services():
+    """Initialize all background services including SSH connection pool."""
+    from network_discovery.ssh_pool import initialize_ssh_pool
+    
+    logger.info("Initializing SSH connection pool...")
+    await initialize_ssh_pool(
+        max_connections=50,
+        max_per_host=5,
+        connection_ttl=300,  # 5 minutes
+        idle_timeout=60      # 1 minute
+    )
+    logger.info("SSH connection pool initialized")
+
+async def cleanup_services():
+    """Clean up all background services including SSH connection pool."""
+    from network_discovery.ssh_pool import close_ssh_pool
+    
+    logger.info("Closing SSH connection pool...")
+    await close_ssh_pool()
+    logger.info("SSH connection pool closed")
 
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully."""
@@ -48,6 +69,9 @@ def main():
     transport = os.getenv("TRANSPORT", "http").lower()
     base_path = os.getenv("BASE_PATH", "")
     
+    # Initialize services (SSH pool)
+    asyncio.run(initialize_services())
+    
     if enable_mcp:
         logger.info("Starting Network Discovery Service in MCP mode")
         from network_discovery.mcp_server import main as mcp_main
@@ -58,6 +82,9 @@ def main():
         except Exception as e:
             logger.error(f"MCP server error: {e}")
             sys.exit(1)
+        finally:
+            # Clean up services
+            asyncio.run(cleanup_services())
     else:
         logger.info("Starting Network Discovery Service in FastAPI mode")
         from network_discovery.api import app
@@ -80,6 +107,8 @@ def main():
             logger.error(f"FastAPI server error: {e}")
             sys.exit(1)
         finally:
+            # Clean up services
+            asyncio.run(cleanup_services())
             logger.info("Server shutdown complete")
 
 if __name__ == "__main__":

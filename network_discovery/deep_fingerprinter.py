@@ -22,6 +22,7 @@ from network_discovery.artifacts import (
     update_status,
 )
 from network_discovery.config import DEFAULT_CONCURRENCY
+from network_discovery.ssh_pool import get_ssh_pool
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +266,7 @@ async def _deep_fingerprint_device(
     semaphore: asyncio.Semaphore
 ) -> Dict:
     """
-    Deep fingerprint a single device via authentication.
+    Deep fingerprint a single device via authentication using connection pooling.
     
     Args:
         device: Device information
@@ -289,21 +290,21 @@ async def _deep_fingerprint_device(
                 host = ip
                 port = 22
             
-            # Connect via SSH
-            conn = await asyncio.wait_for(
-                asyncssh.connect(
+            # Get pooled connection (reuses if available)
+            pool = get_ssh_pool()
+            pooled_conn = await pool.get_connection(
                     host=host,
                     port=port,
                     username=creds.get("username"),
                     password=creds.get("password"),
-                    known_hosts=None,
-                    connect_timeout=10,
-                    **LEGACY_SSH_OPTIONS  # Support legacy devices
-                ),
-                timeout=15
+                connect_timeout=10
             )
             
-            async with conn:
+            logger.debug(f"Got pooled connection to {ip} (reused={pooled_conn.use_count > 1})")
+            
+            try:
+                conn = pooled_conn.connection
+                
                 # Determine which commands to try based on device vendor hint
                 current_vendor = device.get("current_vendor", "unknown").lower()
                 
@@ -334,11 +335,11 @@ async def _deep_fingerprint_device(
                     
                     # Try direct command execution first (faster)
                     try:
-                        result = await asyncio.wait_for(
+                result = await asyncio.wait_for(
                             conn.run(cmd),
-                            timeout=10
-                        )
-                        
+                    timeout=10
+                )
+                
                         # Check if we got valid output from direct execution
                         if result.exit_status == 0 and result.stdout and len(result.stdout) > 50:
                             # Make sure it's not an error message
@@ -416,34 +417,46 @@ async def _deep_fingerprint_device(
                 
                 if not output:
                     logger.warning(f"All commands failed on {ip}")
+                    # Return connection to pool before returning error
+                    await pool.return_connection(pooled_conn)
                     return {
                         "ip": ip,
                         "detected": False,
                         "reason": "No command succeeded"
                     }
-                
-                # Match against patterns
+                    
+                    # Match against patterns
                 logger.debug(f"Attempting to match patterns for {ip}, output length: {len(output)}")
-                for pattern, info in OS_DETECTION_PATTERNS["show version"].items():
-                    if re.search(pattern, output, re.IGNORECASE | re.MULTILINE):
+                    for pattern, info in OS_DETECTION_PATTERNS["show version"].items():
+                        if re.search(pattern, output, re.IGNORECASE | re.MULTILINE):
                         logger.info(f"Detected {ip} as {info['vendor']} {info.get('model', 'unknown')} using command '{successful_command}' (pattern: {pattern[:50]})")
-                        return {
-                            "ip": ip,
-                            "detected": True,
-                            "vendor": info["vendor"],
-                            "model": info.get("model", "unknown"),
-                            "version_output": output[:1000],  # First 1000 chars for evidence
+                        # Return connection to pool
+                        await pool.return_connection(pooled_conn)
+                            return {
+                                "ip": ip,
+                                "detected": True,
+                                "vendor": info["vendor"],
+                                "model": info.get("model", "unknown"),
+                                "version_output": output[:1000],  # First 1000 chars for evidence
                             "method": successful_command
-                        }
+                            }
                 
                 logger.warning(f"No pattern matched for {ip} in output from '{successful_command}'")
                 logger.warning(f"Output preview (first 300 chars): {output[:300]}")
+                # Return connection to pool
+                await pool.return_connection(pooled_conn)
                 return {
                     "ip": ip,
                     "detected": False,
                     "reason": "No matching pattern in output",
                     "output_preview": output[:500]
                 }
+            
+            except Exception as cmd_error:
+                # On command execution error, close connection (may be corrupted)
+                logger.warning(f"Command execution failed for {ip}, closing connection")
+                await pool.close_connection(pooled_conn)
+                raise
                 
         except asyncssh.Error as e:
             logger.debug(f"SSH failed for {ip}: {str(e)}")

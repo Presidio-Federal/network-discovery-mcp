@@ -30,6 +30,7 @@ from network_discovery.scanner import get_scan, get_reachable_hosts
 from network_discovery.fingerprinter import get_fingerprints
 from network_discovery.deep_fingerprinter import deep_fingerprint_job
 from network_discovery.config_collector import get_device_state, get_collection_status
+from network_discovery.config_parser import parse_all_configs, parse_single_config, get_parsed_config
 from network_discovery.batfish_loader import (
     list_networks,
     list_snapshots,
@@ -513,6 +514,86 @@ def create_server() -> FastMCP:
             return result
         except Exception as e:
             logger.error(f"Error in get_device_config tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    @mcp.tool
+    async def parse_configs(
+        job_id: str,
+        hostname: Optional[str] = None,
+        concurrency: int = DEFAULT_CONCURRENCY
+    ) -> Dict[str, Any]:
+        """Parse collected device configurations into structured JSON format.
+        
+        This tool takes the raw CLI configurations collected by config_collector and parses
+        them into structured data using vendor-specific parsers (Cisco, Arista, Juniper, Palo Alto).
+        
+        The structured output includes:
+        - Interfaces (IPs, VLANs, descriptions, status)
+        - VLANs (names, IDs, status)
+        - Routing (OSPF, BGP, static routes)
+        - ACLs/Security policies
+        - NTP/DNS servers
+        - SNMP configuration
+        - Users and AAA
+        - And much more...
+        
+        Output is saved to: {job_dir}/parsed_configs/{hostname}.json
+        
+        Args:
+            job_id: Job identifier
+            hostname: (Optional) Specific device hostname to parse. If omitted, parses all devices.
+            concurrency: Maximum concurrent parsing operations (default: 10)
+        
+        Returns:
+            Dict with success_count, failed_count, and result_dir
+        """
+        try:
+            if hostname:
+                result = await parse_single_config(job_id, hostname)
+            else:
+                result = await parse_all_configs(job_id, concurrency)
+            return result
+        except Exception as e:
+            logger.error(f"Error in parse_configs tool: {str(e)}")
+            return {"error": str(e), "success": False}
+    
+    @mcp.tool
+    async def get_parsed_config(
+        job_id: str,
+        hostname: str
+    ) -> Dict[str, Any]:
+        """Get the parsed (structured) configuration for a specific device.
+        
+        This tool retrieves the structured configuration data that was parsed from
+        raw CLI output. The structured data is much easier to query and analyze than
+        raw CLI text.
+        
+        Returns structured data including:
+        - System information (hostname, domain, IPs)
+        - Interfaces with all configuration details
+        - VLANs and their properties
+        - Routing protocols (OSPF, BGP) configuration
+        - Static routes
+        - ACLs and security policies
+        - NTP/DNS servers
+        - SNMP configuration
+        - Users and authentication
+        - Vendor-specific features
+        
+        Args:
+            job_id: Job identifier
+            hostname: Device hostname or IP address
+        
+        Note: You must run parse_configs first to generate the structured data.
+        
+        Returns:
+            Dict with parsed configuration data
+        """
+        try:
+            result = await get_parsed_config(job_id, hostname)
+            return result
+        except Exception as e:
+            logger.error(f"Error in get_parsed_config tool: {str(e)}")
             return {"error": str(e), "success": False}
     
     @mcp.tool
