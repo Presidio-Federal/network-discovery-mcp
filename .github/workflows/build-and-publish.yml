@@ -187,12 +187,10 @@ jobs:
           echo "- REST API and MCP (AI agent) interfaces" >> release_notes.md
 
       - name: Create Release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.version.outputs.version }}
-          release_name: Release ${{ needs.version.outputs.version }}
+          name: Release ${{ needs.version.outputs.version }}
           body_path: release_notes.md
           draft: false
           prerelease: false
